@@ -1,0 +1,12 @@
+training/.venv/
+training/data/
+training/checkpoints/
+training/__pycache__/
+service/__pycache__/
+**/__pycache__/
+*.pyc
+.DS_Store
+service/data/renders/
+service/.venv/
+service/data/
+service/.env

@@ -1,0 +1,221 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>photo-enhance</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 1rem; max-width: 900px; margin-inline: auto; }
+  h1 { font-size: 1.3rem; }
+  nav { display: flex; gap: 0.5rem; margin-bottom: 1rem; border-bottom: 1px solid #8883; padding-bottom: 0.5rem; }
+  nav button { padding: 0.5rem 1rem; border: none; background: none; font-size: 1rem; cursor: pointer; border-radius: 6px; }
+  nav button.active { background: #7c7cf5; color: white; }
+  section { display: none; }
+  section.active { display: block; }
+  select, input[type=file] { font-size: 1rem; padding: 0.4rem; margin-bottom: 0.75rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.6rem; }
+  .thumb { position: relative; cursor: pointer; border-radius: 8px; overflow: hidden; aspect-ratio: 1; background: #8882; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb.busy::after { content: "processing…"; position: absolute; inset: 0; background: #000a; color: white; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; }
+  .import-card { border: 1px solid #8883; border-radius: 10px; padding: 0.75rem; margin-bottom: 1rem; }
+  .import-card h3 { margin: 0 0 0.5rem; font-size: 0.95rem; word-break: break-all; }
+  .styles-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 0.5rem; }
+  .styles-grid figure { margin: 0; }
+  .styles-grid img { width: 100%; border-radius: 6px; display: block; }
+  .styles-grid figcaption { font-size: 0.72rem; text-align: center; margin-top: 0.2rem; }
+  .styles-grid a { text-decoration: none; color: inherit; }
+  .row { display: flex; justify-content: space-between; align-items: center; }
+  button.small { font-size: 0.8rem; padding: 0.3rem 0.6rem; border-radius: 6px; border: 1px solid #8886; background: none; cursor: pointer; }
+  #status { font-size: 0.85rem; opacity: 0.7; margin-bottom: 0.5rem; min-height: 1.2em; }
+</style>
+</head>
+<body>
+
+<h1>photo-enhance</h1>
+<div id="status"></div>
+
+<nav>
+  <button data-tab="immich" class="active">Browse Immich</button>
+  <button data-tab="upload">Upload</button>
+  <button data-tab="gallery">Gallery</button>
+</nav>
+
+<section id="tab-immich" class="active">
+  <select id="album-select"><option value="">All photos</option></select>
+  <div id="immich-grid" class="grid"></div>
+</section>
+
+<section id="tab-upload">
+  <p>Drag a CR3 / ARW / JPEG here, or pick a file:</p>
+  <input type="file" id="file-input" accept=".cr3,.arw,.dng,.cr2,.nef,.jpg,.jpeg,.png" />
+</section>
+
+<section id="tab-gallery">
+  <div id="gallery-list"></div>
+</section>
+
+<script>
+const statusEl = document.getElementById('status');
+function setStatus(msg, isError) {
+  statusEl.textContent = msg || '';
+  statusEl.style.color = isError ? '#e5484d' : '';
+}
+
+document.querySelectorAll('nav button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'gallery') loadGallery();
+  });
+});
+
+// ---- Immich browse ----
+async function loadAlbums() {
+  try {
+    const albums = await fetch('/api/immich/albums').then(r => r.json());
+    const sel = document.getElementById('album-select');
+    for (const a of albums) {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.albumName} (${a.assetCount})`;
+      sel.appendChild(opt);
+    }
+  } catch (e) {
+    setStatus('Could not load Immich albums: ' + e, true);
+  }
+}
+
+let currentAlbumId = '';
+let currentNextPage = null;
+let loadingMore = false;
+
+function appendImmichThumbs(items) {
+  const grid = document.getElementById('immich-grid');
+  for (const a of items) {
+    const div = document.createElement('div');
+    div.className = 'thumb';
+    const img = document.createElement('img');
+    img.src = `/api/immich/thumbnail/${a.id}`;
+    img.loading = 'lazy';
+    div.appendChild(img);
+    div.title = a.originalFileName;
+    div.addEventListener('click', () => importFromImmich(a.id, div));
+    grid.appendChild(div);
+  }
+}
+
+function renderLoadMoreButton() {
+  let btn = document.getElementById('load-more-btn');
+  if (btn) btn.remove();
+  if (!currentNextPage) return;
+  btn = document.createElement('button');
+  btn.id = 'load-more-btn';
+  btn.className = 'small';
+  btn.style.cssText = 'display:block; margin:1rem auto; padding:0.5rem 1.2rem;';
+  btn.textContent = 'Load more';
+  btn.addEventListener('click', loadMoreImmich);
+  document.getElementById('tab-immich').appendChild(btn);
+}
+
+async function loadImmichGrid(albumId) {
+  currentAlbumId = albumId;
+  currentNextPage = null;
+  document.getElementById('immich-grid').innerHTML = '';
+  await loadMoreImmich();
+}
+
+async function loadMoreImmich() {
+  if (loadingMore) return;
+  loadingMore = true;
+  const params = new URLSearchParams();
+  if (currentAlbumId) params.set('album_id', currentAlbumId);
+  if (currentNextPage) params.set('page', currentNextPage);
+  try {
+    const result = await fetch('/api/immich/search?' + params.toString()).then(r => r.json());
+    appendImmichThumbs(result.items);
+    currentNextPage = result.nextPage;
+    renderLoadMoreButton();
+  } catch (e) {
+    setStatus('Could not load photos: ' + e, true);
+  } finally {
+    loadingMore = false;
+  }
+}
+
+async function importFromImmich(assetId, el) {
+  el.classList.add('busy');
+  setStatus('Processing…');
+  try {
+    const res = await fetch(`/api/import/immich/${assetId}`, { method: 'POST' }).then(r => r.json());
+    setStatus('Done — check the Gallery tab.');
+  } catch (e) {
+    setStatus('Processing failed: ' + e, true);
+  } finally {
+    el.classList.remove('busy');
+  }
+}
+
+document.getElementById('album-select').addEventListener('change', e => loadImmichGrid(e.target.value));
+
+// ---- Upload ----
+document.getElementById('file-input').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  setStatus('Uploading and processing…');
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    await fetch('/api/import/upload', { method: 'POST', body: form }).then(r => r.json());
+    setStatus('Done — check the Gallery tab.');
+  } catch (e) {
+    setStatus('Processing failed: ' + e, true);
+  }
+});
+
+// ---- Gallery ----
+async function loadGallery() {
+  const list = document.getElementById('gallery-list');
+  list.innerHTML = 'Loading…';
+  const imports = await fetch('/api/gallery').then(r => r.json());
+  list.innerHTML = '';
+  if (imports.length === 0) {
+    list.innerHTML = '<p>No imports yet.</p>';
+    return;
+  }
+  for (const imp of imports) {
+    const card = document.createElement('div');
+    card.className = 'import-card';
+    const date = new Date(imp.created_at * 1000).toLocaleString();
+    card.innerHTML = `
+      <div class="row">
+        <h3>${imp.source_name}</h3>
+        <button class="small" data-del="${imp.id}">Delete</button>
+      </div>
+      <div style="font-size:0.75rem; opacity:0.6; margin-bottom:0.5rem;">${date}</div>
+      <div class="styles-grid">
+        ${imp.styles.map(s => `
+          <figure>
+            <a href="/api/gallery/${imp.id}/${s.key}.jpg" download="${imp.source_name}_${s.key}.jpg">
+              <img src="/api/gallery/${imp.id}/${s.key}_thumb.jpg" loading="lazy" />
+              <figcaption>${s.label}</figcaption>
+            </a>
+          </figure>`).join('')}
+      </div>
+    `;
+    card.querySelector('[data-del]').addEventListener('click', async () => {
+      await fetch(`/api/gallery/${imp.id}`, { method: 'DELETE' });
+      loadGallery();
+    });
+    list.appendChild(card);
+  }
+}
+
+loadAlbums();
+loadImmichGrid('');
+</script>
+
+</body>
+</html>
