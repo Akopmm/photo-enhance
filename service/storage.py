@@ -1,9 +1,16 @@
-"""Persistent gallery storage for rendered JPEGs. Renders are kept
-indefinitely (per project decision -- no auto-expiry); the user deletes via
-the UI when they want. Only the small rendered JPEGs persist here, not the
-original RAW/JPEG source -- that's decoded, processed, and discarded
-in-memory per request (see pipeline.py), keeping disk usage to the renders
-only.
+"""Persistent gallery storage.
+
+Renders are kept indefinitely (no auto-expiry) until deleted via the UI.
+
+Preview-first design: at import time we only ever save small preview JPEGs
+(fast, cheap). A full-resolution render for a given style is generated
+on-demand the first time it's requested (see pipeline.render_full_style)
+and cached here afterwards. To regenerate at full-res later we need the
+original bytes again:
+  - Immich imports: nothing extra to store, just the asset_id -- refetch
+    from Immich on demand, it already keeps the original forever.
+  - Plain uploads: nothing else has a copy, so the uploaded original is
+    persisted here (source.<ext>) until the import is deleted.
 """
 import json
 import os
@@ -18,11 +25,19 @@ def _import_dir(import_id: str) -> str:
     return os.path.join(ROOT, import_id)
 
 
-def create_import(source_name: str) -> str:
+def create_import(source_name: str, source_type: str, immich_asset_id: str | None = None) -> str:
+    """source_type: 'immich' or 'upload'."""
     import_id = uuid.uuid4().hex
     d = _import_dir(import_id)
     os.makedirs(d, exist_ok=True)
-    meta = {"id": import_id, "source_name": source_name, "created_at": time.time(), "styles": []}
+    meta = {
+        "id": import_id,
+        "source_name": source_name,
+        "source_type": source_type,
+        "immich_asset_id": immich_asset_id,
+        "created_at": time.time(),
+        "styles": [],
+    }
     _write_meta(import_id, meta)
     return import_id
 
@@ -40,11 +55,38 @@ def _read_meta(import_id: str) -> dict | None:
         return json.load(f)
 
 
-def save_render(import_id: str, style_key: str, style_label: str, jpeg_bytes: bytes, thumb_bytes: bytes):
-    d = _import_dir(import_id)
-    with open(os.path.join(d, f"{style_key}.jpg"), "wb") as f:
-        f.write(jpeg_bytes)
-    with open(os.path.join(d, f"{style_key}_thumb.jpg"), "wb") as f:
+def save_source_upload(import_id: str, raw_bytes: bytes, filename: str):
+    ext = os.path.splitext(filename)[1]
+    with open(os.path.join(_import_dir(import_id), f"source{ext}"), "wb") as f:
+        f.write(raw_bytes)
+    meta = _read_meta(import_id)
+    meta["source_upload_ext"] = ext
+    _write_meta(import_id, meta)
+
+
+def get_source_upload_bytes(import_id: str) -> tuple[bytes, str] | None:
+    """Returns (bytes, filename) for a persisted upload, or None if this
+    import wasn't an upload (e.g. it's an Immich import instead)."""
+    meta = _read_meta(import_id)
+    ext = meta.get("source_upload_ext")
+    if not ext:
+        return None
+    path = os.path.join(_import_dir(import_id), f"source{ext}")
+    with open(path, "rb") as f:
+        return f.read(), meta["source_name"]
+
+
+def save_original_thumb(import_id: str, thumb_bytes: bytes):
+    with open(os.path.join(_import_dir(import_id), "original_thumb.jpg"), "wb") as f:
+        f.write(thumb_bytes)
+
+
+def original_thumb_path(import_id: str) -> str:
+    return os.path.join(_import_dir(import_id), "original_thumb.jpg")
+
+
+def save_preview(import_id: str, style_key: str, style_label: str, thumb_bytes: bytes):
+    with open(os.path.join(_import_dir(import_id), f"{style_key}_thumb.jpg"), "wb") as f:
         f.write(thumb_bytes)
     meta = _read_meta(import_id)
     if not any(s["key"] == style_key for s in meta["styles"]):
@@ -52,8 +94,17 @@ def save_render(import_id: str, style_key: str, style_label: str, jpeg_bytes: by
     _write_meta(import_id, meta)
 
 
-def render_path(import_id: str, style_key: str) -> str:
+def save_full_render(import_id: str, style_key: str, jpeg_bytes: bytes):
+    with open(os.path.join(_import_dir(import_id), f"{style_key}.jpg"), "wb") as f:
+        f.write(jpeg_bytes)
+
+
+def full_render_path(import_id: str, style_key: str) -> str:
     return os.path.join(_import_dir(import_id), f"{style_key}.jpg")
+
+
+def full_render_exists(import_id: str, style_key: str) -> bool:
+    return os.path.exists(full_render_path(import_id, style_key))
 
 
 def thumb_path(import_id: str, style_key: str) -> str:

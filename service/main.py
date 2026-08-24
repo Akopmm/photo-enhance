@@ -79,6 +79,9 @@ async def immich_thumbnail(asset_id: str):
 
 
 # ---- Ingest ----
+# Both paths only render fast, small previews (pipeline.process_preview) --
+# full-resolution rendering happens later, on demand, when a specific style
+# is actually downloaded (see gallery_render_full below).
 
 @app.post("/api/import/immich/{asset_id}")
 async def import_from_immich(asset_id: str):
@@ -86,14 +89,14 @@ async def import_from_immich(asset_id: str):
         data, filename = await immich_client.get_original_bytes(asset_id)
     except Exception as e:
         raise HTTPException(502, f"could not fetch original from Immich: {e}")
-    import_id = await pipeline.process(data, filename)
+    import_id = await pipeline.process_preview(data, filename, source_type="immich", immich_asset_id=asset_id)
     return {"import_id": import_id}
 
 
 @app.post("/api/import/upload")
 async def import_upload(file: UploadFile = File(...)):
     data = await file.read()
-    import_id = await pipeline.process(data, file.filename)
+    import_id = await pipeline.process_preview(data, file.filename, source_type="upload")
     return {"import_id": import_id}
 
 
@@ -112,15 +115,29 @@ async def gallery_get(import_id: str):
     return meta
 
 
-@app.get("/api/gallery/{import_id}/{style_key}.jpg")
-async def gallery_render(import_id: str, style_key: str):
-    path = storage.render_path(import_id, style_key)
-    return FileResponse(path, media_type="image/jpeg")
+@app.get("/api/gallery/{import_id}/original_thumb.jpg")
+async def gallery_original_thumb(import_id: str):
+    return FileResponse(storage.original_thumb_path(import_id), media_type="image/jpeg")
 
 
 @app.get("/api/gallery/{import_id}/{style_key}_thumb.jpg")
 async def gallery_thumb(import_id: str, style_key: str):
     path = storage.thumb_path(import_id, style_key)
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@app.get("/api/gallery/{import_id}/{style_key}.jpg")
+async def gallery_render_full(import_id: str, style_key: str):
+    """Full-resolution render, generated on first request (can take ~10-20s
+    on this hardware) and cached on disk afterwards -- see
+    pipeline.render_full_style. The preview (_thumb.jpg) is what the gallery
+    grid actually displays; this is only hit when a style is downloaded."""
+    try:
+        path = await pipeline.render_full_style(import_id, style_key)
+    except FileNotFoundError:
+        raise HTTPException(404, "import not found")
+    except Exception as e:
+        raise HTTPException(502, f"could not render full-resolution image: {e}")
     return FileResponse(path, media_type="image/jpeg")
 
 

@@ -181,4 +181,22 @@ PRESETS = [
         black_crush=0.03, contrast=0.20, saturation=0.35,
         vignette=0.18,
     )),
+    ("bright_airy", "Bright & Airy", dict(
+        exposure=1.12, wb=(0.008, 0.0, -0.01), shadow_lift=0.12,
+        highlight_recovery=0.02, contrast=-0.04, saturation=-0.05,
+    )),
+    ("faded_retro", "Faded Retro", dict(
+        exposure=1.02, wb=(0.02, 0.005, -0.015), shadow_lift=0.14,
+        black_crush=-0.06, contrast=-0.08, desaturate=0.12,
+        grain=0.035, vignette=0.12,
+    )),
+    ("deep_contrast_noir", "Deep Contrast Noir", dict(
+        black_crush=0.08, contrast=0.40, shadow_lift=-0.02,
+        bw=True, vignette=0.22,
+    )),
+    ("cool_arctic", "Cool Arctic", dict(
+        wb=(-0.025, 0.0, 0.03), dehaze=0.20, contrast=0.10,
+        shadow_tone=(-0.03, 0.0, 0.04), saturation=-0.10,
+        vignette=0.14,
+    )),
 ]
