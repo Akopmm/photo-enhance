@@ -33,6 +33,16 @@ from presets import PRESETS
 
 logger = logging.getLogger("photo-enhance.pipeline")
 
+# Bounds the ENTIRE pipeline (decode included) to one photo at a time across
+# the whole service. model_runtime's own lock only ever covered the model
+# call -- RAW decode runs via asyncio.to_thread *before* that, on Python's
+# default thread pool, completely unbounded. 30 concurrent requests meant 30
+# simultaneous full-resolution decodes (each ~250-400MB in memory for a
+# 24MP+ RAW) on every CPU core at once -- exactly what pegged the host.
+# This semaphore is the actual fix; the model-level lock alone was never
+# enough.
+_pipeline_gate = asyncio.Semaphore(1)
+
 RAW_EXTENSIONS = {".cr3", ".cr2", ".arw", ".dng", ".nef", ".raf", ".orf", ".rw2"}
 JPEG_QUALITY = 95  # full-res downloads -- quality over file size, 10MB+ is fine
 THUMB_LONG_EDGE = 480
@@ -95,31 +105,33 @@ def _resize_tensor(t: torch.Tensor, long_edge: int) -> torch.Tensor:
 
 async def process_preview(raw_bytes: bytes, filename: str, source_type: str, immich_asset_id: str | None = None) -> str:
     """Decode + model once at full res, render small previews for every
-    style. Fast (~1-3s) -- no full-resolution style rendering happens here."""
-    arr = await asyncio.to_thread(_decode_full, raw_bytes, filename)
-    tensor = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).contiguous()
+    style. Fast (~1-3s) -- no full-resolution style rendering happens here.
+    Serialized against every other pipeline call (see _pipeline_gate)."""
+    async with _pipeline_gate:
+        arr = await asyncio.to_thread(_decode_full, raw_bytes, filename)
+        tensor = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).contiguous()
 
-    baseline = await runtime.infer(tensor)
-    small_baseline = await asyncio.to_thread(_resize_tensor, baseline, THUMB_LONG_EDGE)
+        baseline = await runtime.infer(tensor)
+        small_baseline = await asyncio.to_thread(_resize_tensor, baseline, THUMB_LONG_EDGE)
 
-    import_id = storage.create_import(filename, source_type, immich_asset_id)
+        import_id = storage.create_import(filename, source_type, immich_asset_id)
 
-    if source_type == "upload":
-        await asyncio.to_thread(storage.save_source_upload, import_id, raw_bytes, filename)
+        if source_type == "upload":
+            await asyncio.to_thread(storage.save_source_upload, import_id, raw_bytes, filename)
 
-    # Normally-exposed decode for the human "before" comparison -- the model's
-    # own input (tensor, above) is deliberately flat/ungraded and would look
-    # misleadingly dark here.
-    normal_arr = await asyncio.to_thread(_decode_full, raw_bytes, filename, False)
-    normal_tensor = torch.from_numpy(normal_arr).permute(2, 0, 1).unsqueeze(0).contiguous()
-    small_normal = await asyncio.to_thread(_resize_tensor, normal_tensor, THUMB_LONG_EDGE)
-    orig_thumb_bytes = await asyncio.to_thread(_tensor_to_jpeg_bytes, small_normal, THUMB_QUALITY)
-    await asyncio.to_thread(storage.save_original_thumb, import_id, orig_thumb_bytes)
+        # Normally-exposed decode for the human "before" comparison -- the
+        # model's own input (tensor, above) is deliberately flat/ungraded
+        # and would look misleadingly dark here.
+        normal_arr = await asyncio.to_thread(_decode_full, raw_bytes, filename, False)
+        normal_tensor = torch.from_numpy(normal_arr).permute(2, 0, 1).unsqueeze(0).contiguous()
+        small_normal = await asyncio.to_thread(_resize_tensor, normal_tensor, THUMB_LONG_EDGE)
+        orig_thumb_bytes = await asyncio.to_thread(_tensor_to_jpeg_bytes, small_normal, THUMB_QUALITY)
+        await asyncio.to_thread(storage.save_original_thumb, import_id, orig_thumb_bytes)
 
-    for key, label, params in PRESETS:
-        styled = await runtime.render_style(small_baseline, params)
-        thumb_bytes = await asyncio.to_thread(_tensor_to_jpeg_bytes, styled, THUMB_QUALITY)
-        await asyncio.to_thread(storage.save_preview, import_id, key, label, thumb_bytes)
+        for key, label, params in PRESETS:
+            styled = await runtime.render_style(small_baseline, params)
+            thumb_bytes = await asyncio.to_thread(_tensor_to_jpeg_bytes, styled, THUMB_QUALITY)
+            await asyncio.to_thread(storage.save_preview, import_id, key, label, thumb_bytes)
 
     logger.info("preview: %s -> import %s (%d styles)", filename, import_id, len(PRESETS))
     return import_id
@@ -138,19 +150,26 @@ async def _get_original_bytes(import_id: str) -> tuple[bytes, str]:
 async def render_full_style(import_id: str, style_key: str) -> str:
     """Full-resolution render for one style, generated on first request and
     cached on disk afterwards. Redecodes + reruns the model (cheap) then
-    runs just this one preset at full res (the actually expensive part)."""
+    runs just this one preset at full res (the actually expensive part).
+    Serialized against every other pipeline call (see _pipeline_gate)."""
     if storage.full_render_exists(import_id, style_key):
         return storage.full_render_path(import_id, style_key)
 
     params = next(p for k, l, p in PRESETS if k == style_key)
-    raw_bytes, filename = await _get_original_bytes(import_id)
 
-    arr = await asyncio.to_thread(_decode_full, raw_bytes, filename)
-    tensor = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).contiguous()
-    baseline = await runtime.infer(tensor)
-    styled = await runtime.render_style(baseline, params)
-    jpeg_bytes = await asyncio.to_thread(_tensor_to_jpeg_bytes, styled, JPEG_QUALITY)
-    await asyncio.to_thread(storage.save_full_render, import_id, style_key, jpeg_bytes)
+    async with _pipeline_gate:
+        # Re-check after acquiring the gate: another request may have
+        # rendered (and cached) this exact style while we were queued.
+        if storage.full_render_exists(import_id, style_key):
+            return storage.full_render_path(import_id, style_key)
+
+        raw_bytes, filename = await _get_original_bytes(import_id)
+        arr = await asyncio.to_thread(_decode_full, raw_bytes, filename)
+        tensor = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).contiguous()
+        baseline = await runtime.infer(tensor)
+        styled = await runtime.render_style(baseline, params)
+        jpeg_bytes = await asyncio.to_thread(_tensor_to_jpeg_bytes, styled, JPEG_QUALITY)
+        await asyncio.to_thread(storage.save_full_render, import_id, style_key, jpeg_bytes)
 
     logger.info("full render: import %s style %s", import_id, style_key)
     return storage.full_render_path(import_id, style_key)
