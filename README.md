@@ -1,6 +1,6 @@
 # photo-enhance
 
-A self-hosted Lightroom-style photo enhancement service: point it at a photo (Canon CR3, Sony ARW, or plain JPEG), it predicts a color/exposure correction with a small neural network, then renders several distinct style variants (natural, HDR, cinematic teal-orange, B&W, etc.) on top of that correction. Built to run entirely on a home server's CPU (no GPU required), with a browser UI for importing from an [Immich](https://immich.app) photo library or a direct upload.
+A self-hosted Lightroom-style photo enhancement service: point it at a photo (Canon CR3, Sony ARW, or plain JPEG), it predicts a color/exposure correction with a small neural network, then renders 12 distinct style variants (natural, HDR, cinematic teal-orange, B&W, bright & airy, faded retro, and more) on top of that correction. Built to run entirely on a home server's CPU (no GPU required), with a browser UI for importing from an [Immich](https://immich.app) photo library or a direct upload.
 
 ## Why
 
@@ -10,7 +10,8 @@ Built as a personal alternative to an Adobe Lightroom subscription.
 
 - **The model** is a small CNN (~600K parameters) based on the architecture from [*Learning Image-Adaptive 3D Lookup Tables for High Performance Photo Enhancement in Real-time*](https://github.com/HuiZeng/Image-Adaptive-3DLUT) (Zeng et al., Apache-2.0). It looks at a downsampled version of the photo and predicts how to blend a handful of learned 3D color lookup tables into one image-specific correction.
 - **`service/`** ships with that paper's own published pretrained weights (`service/weights/model.pt`, sRGB variant, converted into this repo's state-dict layout — see `training/model.py`... credit: original weights from the authors' repo's `pretrained_models/sRGB/`). The LUT-application step is reimplemented with `torch.nn.functional.grid_sample` instead of the original repo's CUDA-only compiled extension, so the identical model runs on plain CPU, Apple Silicon (MPS), or Intel integrated GPU (OpenVINO) with no GPU-specific build step.
-- **The 8 style presets** (Natural Light, HDR Punch, Cinematic Teal-Orange, Golden Hour Warm, Moody Matte Film, B&W Dramatic, Clean Commercial, Vibrant Punch) are a separate, deterministic PyTorch-based grading pipeline (`service/presets.py`) applied on top of the model's corrected baseline — not learned, hand-tuned.
+- **12 style presets** (Natural Light, HDR Punch, Cinematic Teal-Orange, Golden Hour Warm, Moody Matte Film, B&W Dramatic, Clean Commercial, Vibrant Punch, Bright & Airy, Faded Retro, Deep Contrast Noir, Cool Arctic) are a separate, deterministic PyTorch-based grading pipeline (`service/presets.py`) applied on top of the model's corrected baseline — not learned, hand-tuned.
+- **Preview-first rendering**: decode + model inference happen once at full resolution on import (both are cheap regardless of resolution — the weight-predictor CNN always downsamples its input to 256×256 internally, and LUT color correction is a pointwise per-pixel operation, so it costs about the same at any output size). The genuinely expensive part — the deterministic style-preset box-blur effects — only runs at full resolution for a style you actually download, and is cached after that (`pipeline.render_full_style`). Import is a few seconds; a full-res download of one style is a few more seconds the first time, instant after. The gallery also shows the original, uncorrected photo alongside the style renders for comparison.
 - **`training/`** is a from-scratch training pipeline (Mac/MPS) against the MIT-Adobe FiveK dataset, for anyone who wants to train their own model instead of using the shipped pretrained weights. Not needed to run the service.
 
 ## Running the service
@@ -30,6 +31,8 @@ Or via Docker — build context must be the repo root (not `service/`), since th
 docker build -f service/Dockerfile -t photo-enhance .
 docker run -p 5054:5054 --env-file service/.env photo-enhance
 ```
+
+CI (`.github/workflows/build.yml`) builds and publishes this image to `ghcr.io/akopmm/photo-enhance:latest` on every push to `main` — deploy hosts can just `docker pull` that instead of building locally.
 
 Set `INFERENCE_DEVICE=openvino_gpu` (with `/dev/dri` passed through) to route inference through an Intel integrated GPU instead of CPU — see `service/model_runtime.py`.
 
