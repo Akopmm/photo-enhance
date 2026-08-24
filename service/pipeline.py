@@ -33,15 +33,19 @@ from presets import PRESETS
 
 logger = logging.getLogger("photo-enhance.pipeline")
 
-# Bounds the ENTIRE pipeline (decode included) to one photo at a time across
-# the whole service. model_runtime's own lock only ever covered the model
-# call -- RAW decode runs via asyncio.to_thread *before* that, on Python's
-# default thread pool, completely unbounded. 30 concurrent requests meant 30
-# simultaneous full-resolution decodes (each ~250-400MB in memory for a
-# 24MP+ RAW) on every CPU core at once -- exactly what pegged the host.
-# This semaphore is the actual fix; the model-level lock alone was never
-# enough.
-_pipeline_gate = asyncio.Semaphore(1)
+# Bounds the ENTIRE pipeline (decode included) across the whole service.
+# model_runtime's own lock only ever covered the model call -- RAW decode
+# runs via asyncio.to_thread *before* that, on Python's default thread pool,
+# completely unbounded. 30 concurrent requests meant 30 simultaneous
+# full-resolution decodes (each ~250-400MB in memory for a 24MP+ RAW) on
+# every CPU core at once -- exactly what pegged the host. This semaphore is
+# the actual fix; the model-level lock alone was never enough.
+#
+# Default 3: measured on a 6-core/15GB host, one job at a time left ~10.5GB
+# free, so 3 keeps a wide margin while using more of the available cores.
+# Lower it if the host is smaller or shares CPU with heavier neighbours.
+MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", "3"))
+_pipeline_gate = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
 
 RAW_EXTENSIONS = {".cr3", ".cr2", ".arw", ".dng", ".nef", ".raf", ".orf", ".rw2"}
 JPEG_QUALITY = 95  # full-res downloads -- quality over file size, 10MB+ is fine

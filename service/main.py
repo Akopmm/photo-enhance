@@ -38,7 +38,11 @@ async def startup():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model": runtime.status()}
+    return {
+        "status": "ok",
+        "model": runtime.status(),
+        "max_concurrent_jobs": pipeline.MAX_CONCURRENT_JOBS,
+    }
 
 
 # ---- Immich browse (server-side proxy; the browser never sees the API key) ----
