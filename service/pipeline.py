@@ -47,8 +47,17 @@ def _resize_long_edge(img: Image.Image, long_edge: int) -> Image.Image:
     return img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
 
 
-def _decode_full(raw_bytes: bytes, filename: str) -> np.ndarray:
-    """Returns an (H, W, 3) float32 array in [0, 1] at native resolution."""
+def _decode_full(raw_bytes: bytes, filename: str, no_auto_bright: bool = True) -> np.ndarray:
+    """Returns an (H, W, 3) float32 array in [0, 1] at native resolution.
+
+    no_auto_bright=True (the default, used for the model's actual input) is
+    a deliberately flat/ungraded rendering -- no automatic exposure boost --
+    so the model has something realistic to correct rather than an already
+    brightened image. That also makes it a misleading "before" for a human
+    before/after comparison, since it looks artificially dark; the
+    original-photo preview shown in the gallery uses no_auto_bright=False
+    instead, a normally-exposed rendering of the same file.
+    """
     ext = os.path.splitext(filename.lower())[1]
     if ext in RAW_EXTENSIONS:
         with tempfile.NamedTemporaryFile(suffix=ext) as tmp:
@@ -57,7 +66,7 @@ def _decode_full(raw_bytes: bytes, filename: str) -> np.ndarray:
             with rawpy.imread(tmp.name) as raw:
                 rgb = raw.postprocess(
                     use_camera_wb=True,
-                    no_auto_bright=True,
+                    no_auto_bright=no_auto_bright,
                     output_bps=8,
                     output_color=rawpy.ColorSpace.sRGB,
                 )
@@ -98,8 +107,13 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str, imm
     if source_type == "upload":
         await asyncio.to_thread(storage.save_source_upload, import_id, raw_bytes, filename)
 
-    small_input = await asyncio.to_thread(_resize_tensor, tensor, THUMB_LONG_EDGE)
-    orig_thumb_bytes = await asyncio.to_thread(_tensor_to_jpeg_bytes, small_input, THUMB_QUALITY)
+    # Normally-exposed decode for the human "before" comparison -- the model's
+    # own input (tensor, above) is deliberately flat/ungraded and would look
+    # misleadingly dark here.
+    normal_arr = await asyncio.to_thread(_decode_full, raw_bytes, filename, False)
+    normal_tensor = torch.from_numpy(normal_arr).permute(2, 0, 1).unsqueeze(0).contiguous()
+    small_normal = await asyncio.to_thread(_resize_tensor, normal_tensor, THUMB_LONG_EDGE)
+    orig_thumb_bytes = await asyncio.to_thread(_tensor_to_jpeg_bytes, small_normal, THUMB_QUALITY)
     await asyncio.to_thread(storage.save_original_thumb, import_id, orig_thumb_bytes)
 
     for key, label, params in PRESETS:
