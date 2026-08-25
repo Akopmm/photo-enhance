@@ -116,9 +116,12 @@
       <option value="enhanced">Enhanced — adds subject / sky aware region grading</option>
     </select>
     <div class="hint">
-      <b>Max concurrent renders</b> is separate from jobs because a full-resolution region
-      render peaks around 3.5&nbsp;GB against ~2.5&nbsp;GB for an import &mdash; three at once
-      will exhaust a 15&nbsp;GB host.<br>
+      <b>Max concurrent jobs / renders take effect after a service restart</b> &mdash; the
+      semaphores are built at startup. Measured on a 6-core i5-10500T: 30 imports peak at
+      ~9.3&nbsp;GB at 3 jobs and ~8.1&nbsp;GB at 2, for the same ~15&nbsp;s per photo, so the
+      third slot costs memory and buys no throughput on a CPU-bound host.
+      Renders are gated separately because one full-resolution region render peaks around
+      3.5&nbsp;GB against ~2.5&nbsp;GB for an import.<br>
       Enhanced runs segmentation models (~1.2&nbsp;GB RAM, several seconds per photo on CPU)
       to grade the subject, the sky, foliage and depth separately. Classic skips them entirely.
     </div>
