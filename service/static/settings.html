@@ -15,7 +15,7 @@
   section { border: 1px solid #8883; border-radius: 10px; padding: 1rem; margin-bottom: 1rem; }
   label { display: block; font-size: 0.8rem; opacity: 0.8; margin-bottom: 0.25rem; }
   input[type=text], input[type=password], input[type=number], select {
-    width: 100%; box-sizing: border-box; font-size: 0.95rem; padding: 0.5rem;
+    width: 100%; box-sizing: border-box; font-size: 16px; padding: 0.5rem;
     border-radius: 8px; border: 1px solid #8886; background: transparent; color: inherit;
     margin-bottom: 0.8rem; }
   .row { display: flex; gap: 0.75rem; }
@@ -37,8 +37,9 @@
 
   /* --- mobile / a11y pass (measured at 390px, 2026-08-25) --- */
   /* 16px is the threshold below which iOS Safari zooms the page when an
-     input takes focus, which reads as the layout breaking. */
-  input, select, textarea { font-size: 16px; }
+     input takes focus. Set at each control's own rule above rather than here:
+     a bare `input` selector (0,0,1) loses to `input[type=text]` (0,1,1) no
+     matter how late it appears. */
   /* Comfortable touch targets. Measured buttons were 33-35px and the
      "Gallery" link only 19px tall. */
   button, .crop-opt { min-height: 40px; }

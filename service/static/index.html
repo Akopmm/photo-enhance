@@ -13,7 +13,7 @@
   nav button.active { background: #7c7cf5; color: white; }
   section { display: none; }
   section.active { display: block; }
-  select, input[type=file] { font-size: 1rem; padding: 0.4rem; margin-bottom: 0.75rem; }
+  select, input[type=file] { font-size: 16px; padding: 0.4rem; margin-bottom: 0.75rem; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.6rem; }
   .thumb { position: relative; cursor: pointer; border-radius: 8px; overflow: hidden; aspect-ratio: 1; background: #8882; }
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -41,8 +41,9 @@
 
   /* --- mobile / a11y pass (measured at 390px, 2026-08-25) --- */
   /* 16px is the threshold below which iOS Safari zooms the page when an
-     input takes focus, which reads as the layout breaking. */
-  input, select, textarea { font-size: 16px; }
+     input takes focus. Set at each control's own rule above rather than here:
+     a bare `input` selector (0,0,1) loses to `input[type=text]` (0,1,1) no
+     matter how late it appears. */
   /* Comfortable touch targets. Measured buttons were 33-35px and the
      "Gallery" link only 19px tall. */
   button, .crop-opt { min-height: 40px; }

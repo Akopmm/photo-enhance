@@ -23,8 +23,9 @@
 
   /* --- mobile / a11y pass (measured at 390px, 2026-08-25) --- */
   /* 16px is the threshold below which iOS Safari zooms the page when an
-     input takes focus, which reads as the layout breaking. */
-  input, select, textarea { font-size: 16px; }
+     input takes focus. Set at each control's own rule above rather than here:
+     a bare `input` selector (0,0,1) loses to `input[type=text]` (0,1,1) no
+     matter how late it appears. */
   /* Comfortable touch targets. Measured buttons were 33-35px and the
      "Gallery" link only 19px tall. */
   button, .crop-opt { min-height: 40px; }
