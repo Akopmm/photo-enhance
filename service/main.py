@@ -102,6 +102,13 @@ async def first_run_setup(username: str = Form(...), password: str = Form(...)):
     if len(password) < 8:
         raise HTTPException(400, "password must be at least 8 characters")
     auth.create_user(username, password, is_admin=True)
+    # The startup migration runs before any user exists, so on a first-run
+    # form signup it finds no admin to hand legacy imports to. Claim them
+    # here too, or an upgraded single-user instance shows an empty gallery
+    # while every file is still on disk.
+    claimed = storage.claim_unowned(username.strip().lower())
+    if claimed:
+        logger.info("claimed %d pre-existing import(s) for new admin %s", claimed, username)
     return _login_response(username)
 
 
