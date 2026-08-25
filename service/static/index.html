@@ -34,7 +34,13 @@
 </head>
 <body>
 
-<h1>photo-enhance</h1>
+<div style="display:flex; justify-content:space-between; align-items:center;">
+  <h1 style="margin:0;">photo-enhance</h1>
+  <div style="font-size:0.85rem;">
+    <span id="whoami" style="opacity:0.6;"></span>
+    <a href="/settings" style="margin-left:0.6rem; color:#7c7cf5;">Settings</a>
+  </div>
+</div>
 <div id="status"></div>
 
 <nav>
@@ -246,6 +252,13 @@ async function downloadFullRes(btn) {
     btn.classList.remove('busy');
   }
 }
+
+fetch('/api/me').then(r => r.json()).then(m => {
+  document.getElementById('whoami').textContent = m.username || '';
+  if (!m.immich_api_key_set) {
+    setStatus('No Immich API key configured yet — add one in Settings to browse your library.', true);
+  }
+}).catch(() => {});
 
 loadAlbums();
 loadImmichGrid('');

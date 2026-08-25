@@ -25,13 +25,17 @@ def _import_dir(import_id: str) -> str:
     return os.path.join(ROOT, import_id)
 
 
-def create_import(source_name: str, source_type: str, immich_asset_id: str | None = None) -> str:
-    """source_type: 'immich' or 'upload'."""
+def create_import(source_name: str, source_type: str, immich_asset_id: str | None = None,
+                  owner: str = "") -> str:
+    """source_type: 'immich' or 'upload'. `owner` scopes the import to one
+    user -- galleries are per-user, and every read path checks ownership
+    (see owns()) rather than relying on uuids being unguessable."""
     import_id = uuid.uuid4().hex
     d = _import_dir(import_id)
     os.makedirs(d, exist_ok=True)
     meta = {
         "id": import_id,
+        "owner": owner,
         "source_name": source_name,
         "source_type": source_type,
         "immich_asset_id": immich_asset_id,
@@ -115,16 +119,24 @@ def get_import(import_id: str) -> dict | None:
     return _read_meta(import_id)
 
 
-def list_imports() -> list[dict]:
+def list_imports(owner: str | None = None) -> list[dict]:
     if not os.path.isdir(ROOT):
         return []
     items = []
     for name in os.listdir(ROOT):
         meta = _read_meta(name)
-        if meta:
-            items.append(meta)
+        if not meta:
+            continue
+        if owner is not None and meta.get("owner", "") != owner:
+            continue
+        items.append(meta)
     items.sort(key=lambda m: m["created_at"], reverse=True)
     return items
+
+
+def owns(import_id: str, username: str) -> bool:
+    meta = _read_meta(import_id)
+    return bool(meta) and meta.get("owner", "") == username
 
 
 def delete_import(import_id: str):

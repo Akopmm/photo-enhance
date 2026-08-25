@@ -1,0 +1,244 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>photo-enhance · settings</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 1rem;
+         max-width: 720px; margin-inline: auto; }
+  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+  h1 { font-size: 1.2rem; margin: 0; }
+  h2 { font-size: 0.95rem; margin: 0 0 0.75rem; }
+  a { color: #7c7cf5; }
+  section { border: 1px solid #8883; border-radius: 10px; padding: 1rem; margin-bottom: 1rem; }
+  label { display: block; font-size: 0.8rem; opacity: 0.8; margin-bottom: 0.25rem; }
+  input[type=text], input[type=password], input[type=number], select {
+    width: 100%; box-sizing: border-box; font-size: 0.95rem; padding: 0.5rem;
+    border-radius: 8px; border: 1px solid #8886; background: transparent; color: inherit;
+    margin-bottom: 0.8rem; }
+  .row { display: flex; gap: 0.75rem; }
+  .row > div { flex: 1; }
+  .check { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; font-size: 0.9rem; }
+  .check input { margin: 0; }
+  button { font-size: 0.9rem; padding: 0.5rem 0.9rem; border: none; border-radius: 8px;
+           background: #7c7cf5; color: white; cursor: pointer; }
+  button.ghost { background: none; border: 1px solid #8886; color: inherit; }
+  button.danger { background: none; border: 1px solid #e5484d55; color: #e5484d; }
+  .hint { font-size: 0.78rem; opacity: 0.6; margin: -0.4rem 0 0.8rem; }
+  .msg { font-size: 0.85rem; min-height: 1.2em; margin-top: 0.5rem; }
+  .msg.err { color: #e5484d; }
+  .msg.ok { color: #30a46c; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  td, th { text-align: left; padding: 0.4rem 0.3rem; border-bottom: 1px solid #8882; }
+  .admin-only { display: none; }
+  .pill { font-size: 0.7rem; border: 1px solid #8886; border-radius: 999px; padding: 0.1rem 0.5rem; opacity: 0.8; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Settings</h1>
+  <div>
+    <a href="/">← Gallery</a>
+    <button class="ghost" id="logout" style="margin-left:0.5rem;">Sign out</button>
+  </div>
+</header>
+
+<section>
+  <h2>Your Immich connection <span class="pill" id="who"></span></h2>
+  <form id="immich-form">
+    <label for="iurl">Immich URL</label>
+    <input type="text" id="iurl" name="immich_url" placeholder="http://192.168.0.123:2283" />
+    <label for="ikey">Immich API key</label>
+    <input type="password" id="ikey" name="immich_api_key" placeholder="" autocomplete="new-password" />
+    <div class="hint" id="keyhint"></div>
+    <div class="hint">
+      Needs these scopes only: <code>album.read</code>, <code>asset.read</code>,
+      <code>asset.view</code>, <code>asset.download</code>.
+      Your key is stored server-side and never sent back to the browser.
+    </div>
+    <button type="submit">Save connection</button>
+    <div class="msg" id="immich-msg"></div>
+  </form>
+</section>
+
+<section>
+  <h2>Change your password</h2>
+  <form id="pw-form">
+    <div class="row">
+      <div>
+        <label for="cur">Current password</label>
+        <input type="password" id="cur" name="current" autocomplete="current-password" />
+      </div>
+      <div>
+        <label for="new">New password (min 8)</label>
+        <input type="password" id="new" name="new" autocomplete="new-password" />
+      </div>
+    </div>
+    <button type="submit">Update password</button>
+    <div class="msg" id="pw-msg"></div>
+  </form>
+</section>
+
+<section class="admin-only">
+  <h2>Processing (instance-wide)</h2>
+  <form id="settings-form">
+    <label for="mode">Mode</label>
+    <select id="mode" name="mode">
+      <option value="classic">Classic — global colour correction + style presets</option>
+      <option value="enhanced">Enhanced — adds subject / sky aware region grading</option>
+    </select>
+    <div class="hint">
+      Enhanced runs segmentation models (~1.2&nbsp;GB RAM, several seconds per photo on CPU)
+      to grade the subject and the sky separately. Classic skips them entirely.
+    </div>
+
+    <div class="check"><input type="checkbox" id="subject_masking" name="subject_masking" />
+      <label for="subject_masking" style="margin:0">Subject masking (selective colour, subject pop)</label></div>
+    <div class="check"><input type="checkbox" id="sky_masking" name="sky_masking" />
+      <label for="sky_masking" style="margin:0">Sky masking (sky drama)</label></div>
+    <div class="check"><input type="checkbox" id="cinematic_presets" name="cinematic_presets" />
+      <label for="cinematic_presets" style="margin:0">Cinematic preset pack</label></div>
+
+    <div class="row">
+      <div>
+        <label for="max_concurrent_jobs">Max concurrent jobs</label>
+        <input type="number" id="max_concurrent_jobs" name="max_concurrent_jobs" min="1" max="8" />
+      </div>
+      <div>
+        <label for="jpeg_quality">JPEG quality</label>
+        <input type="number" id="jpeg_quality" name="jpeg_quality" min="60" max="100" />
+      </div>
+      <div>
+        <label for="idle_unload_minutes">Idle unload (min)</label>
+        <input type="number" id="idle_unload_minutes" name="idle_unload_minutes" min="0" step="1" />
+      </div>
+    </div>
+    <div class="hint">
+      Concurrency changes apply to newly started containers; the running process keeps its
+      current limit until restart.
+    </div>
+    <button type="submit">Save processing settings</button>
+    <div class="msg" id="settings-msg"></div>
+  </form>
+</section>
+
+<section class="admin-only">
+  <h2>Users</h2>
+  <table id="users"></table>
+  <form id="user-form" style="margin-top:0.9rem;">
+    <div class="row">
+      <div>
+        <label for="nu">Username</label>
+        <input type="text" id="nu" name="username" autocapitalize="none" />
+      </div>
+      <div>
+        <label for="np">Password (min 8)</label>
+        <input type="password" id="np" name="password" autocomplete="new-password" />
+      </div>
+    </div>
+    <div class="check"><input type="checkbox" id="na" name="is_admin" value="1" />
+      <label for="na" style="margin:0">Administrator</label></div>
+    <button type="submit">Add user</button>
+    <div class="msg" id="user-msg"></div>
+  </form>
+</section>
+
+<script>
+function setMsg(id, text, ok) {
+  const el = document.getElementById(id);
+  el.className = 'msg ' + (text ? (ok ? 'ok' : 'err') : '');
+  el.textContent = text || '';
+}
+
+async function post(url, form) {
+  const res = await fetch(url, { method: 'POST', body: new FormData(form) });
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    throw new Error(j.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+async function load() {
+  const me = await fetch('/api/me').then(r => r.json());
+  document.getElementById('who').textContent = me.username + (me.is_admin ? ' · admin' : '');
+  document.getElementById('iurl').value = me.immich_url || '';
+  document.getElementById('keyhint').textContent = me.immich_api_key_set
+    ? `A key is saved (${me.immich_api_key_preview}). Leave blank to keep it.`
+    : 'No key saved yet — imports from Immich will not work until you add one.';
+
+  const s = await fetch('/api/settings').then(r => r.json());
+  if (s.is_admin) {
+    document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'block');
+    document.getElementById('mode').value = s.mode;
+    for (const k of ['subject_masking', 'sky_masking', 'cinematic_presets']) {
+      document.getElementById(k).checked = !!s[k];
+    }
+    for (const k of ['max_concurrent_jobs', 'jpeg_quality', 'idle_unload_minutes']) {
+      document.getElementById(k).value = s[k];
+    }
+    loadUsers();
+  }
+}
+
+async function loadUsers() {
+  const users = await fetch('/api/users').then(r => r.json());
+  const t = document.getElementById('users');
+  t.innerHTML = '<tr><th>User</th><th>Immich key</th><th></th></tr>' + users.map(u => `
+    <tr>
+      <td>${u.username}${u.is_admin ? ' <span class="pill">admin</span>' : ''}</td>
+      <td>${u.immich_api_key_set ? u.immich_api_key_preview : '<span style="opacity:.5">none</span>'}</td>
+      <td style="text-align:right"><button class="danger" data-del="${u.username}">Remove</button></td>
+    </tr>`).join('');
+  t.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
+    const res = await fetch('/api/users/' + b.dataset.del, { method: 'DELETE' });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      setMsg('user-msg', j.detail || 'could not remove user', false);
+      return;
+    }
+    setMsg('user-msg', '', true);
+    loadUsers();
+  }));
+}
+
+document.getElementById('immich-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try { await post('/api/me/immich', e.target);
+        document.getElementById('ikey').value = '';
+        setMsg('immich-msg', 'Saved.', true); await load(); }
+  catch (err) { setMsg('immich-msg', err.message, false); }
+});
+
+document.getElementById('pw-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try { await post('/api/me/password', e.target); e.target.reset();
+        setMsg('pw-msg', 'Password updated.', true); }
+  catch (err) { setMsg('pw-msg', err.message, false); }
+});
+
+document.getElementById('settings-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try { await post('/api/settings', e.target); setMsg('settings-msg', 'Saved.', true); }
+  catch (err) { setMsg('settings-msg', err.message, false); }
+});
+
+document.getElementById('user-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try { await post('/api/users', e.target); e.target.reset();
+        setMsg('user-msg', 'User added.', true); loadUsers(); }
+  catch (err) { setMsg('user-msg', err.message, false); }
+});
+
+document.getElementById('logout').addEventListener('click', async () => {
+  await fetch('/api/logout', { method: 'POST' });
+  location.href = '/login';
+});
+
+load();
+</script>
+</body>
+</html>
