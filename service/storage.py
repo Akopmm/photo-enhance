@@ -134,6 +134,34 @@ def list_imports(owner: str | None = None) -> list[dict]:
     return items
 
 
+def save_mask(import_id: str, name: str, png_bytes: bytes):
+    """Masks are computed once at import and reused for the full-resolution
+    render, so the download grades through exactly the mask the preview was
+    judged on. Stored as PNG bytes; masking.encode/decode own the format."""
+    with open(os.path.join(_import_dir(import_id), f"mask_{name}.png"), "wb") as f:
+        f.write(png_bytes)
+
+
+def load_mask(import_id: str, name: str) -> bytes | None:
+    path = os.path.join(_import_dir(import_id), f"mask_{name}.png")
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def save_scene(import_id: str, scene: dict, recipes: list):
+    """`recipes` is the list of region-recipe keys that were actually offered
+    for this import. Persisting it is what stops the download path from
+    re-deciding availability and 500ing on a style the gallery is showing."""
+    meta = _read_meta(import_id)
+    if not meta:
+        return
+    meta["scene"] = scene
+    meta["region_recipes"] = recipes
+    _write_meta(import_id, meta)
+
+
 def save_crop_thumb(import_id: str, crop_key: str, jpeg_bytes: bytes):
     with open(os.path.join(_import_dir(import_id), f"crop_{crop_key}_thumb.jpg"), "wb") as f:
         f.write(jpeg_bytes)

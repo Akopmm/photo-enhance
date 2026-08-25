@@ -117,13 +117,15 @@
     </select>
     <div class="hint">
       Enhanced runs segmentation models (~1.2&nbsp;GB RAM, several seconds per photo on CPU)
-      to grade the subject and the sky separately. Classic skips them entirely.
+      to grade the subject, the sky, foliage and depth separately. Classic skips them entirely.
     </div>
 
     <div class="check"><input type="checkbox" id="subject_masking" name="subject_masking" />
       <label for="subject_masking" style="margin:0">Subject masking (selective colour, subject pop)</label></div>
     <div class="check"><input type="checkbox" id="sky_masking" name="sky_masking" />
-      <label for="sky_masking" style="margin:0">Sky masking (sky drama)</label></div>
+      <label for="sky_masking" style="margin:0">Sky &amp; scene masking (sky drama, foliage)</label></div>
+    <div class="check"><input type="checkbox" id="depth_masking" name="depth_masking" />
+      <label for="depth_masking" style="margin:0">Depth masking (depth pop, aerial depth)</label></div>
     <div class="check"><input type="checkbox" id="cinematic_presets" name="cinematic_presets" />
       <label for="cinematic_presets" style="margin:0">Cinematic preset pack</label></div>
 
@@ -199,7 +201,7 @@ async function load() {
   if (s.is_admin) {
     document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'block');
     document.getElementById('mode').value = s.mode;
-    for (const k of ['subject_masking', 'sky_masking', 'cinematic_presets']) {
+    for (const k of ['subject_masking', 'sky_masking', 'depth_masking', 'cinematic_presets']) {
       document.getElementById(k).checked = !!s[k];
     }
     for (const k of ['max_concurrent_jobs', 'jpeg_quality', 'idle_unload_minutes']) {

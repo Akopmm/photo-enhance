@@ -1,6 +1,6 @@
 # photo-enhance
 
-A self-hosted, Lightroom-style photo enhancement service. Point it at a photo — Canon CR3, Sony ARW, or plain JPEG — and it predicts a colour/exposure correction with a small neural network, then renders **18 style variants** on top of it. In *enhanced* mode it also segments the photo so the subject and the sky can be graded separately, and suggests compositional crops.
+A self-hosted, Lightroom-style photo enhancement service. Point it at a photo — Canon CR3, Sony ARW, or plain JPEG — and it predicts a colour/exposure correction with a small neural network, then renders **18 style variants** on top of it. In *enhanced* mode it also segments the photo — subject, sky, foliage and depth — so those can be graded separately, and suggests compositional crops.
 
 Runs entirely on a home server's CPU. No GPU required, nothing leaves the machine.
 
@@ -33,11 +33,16 @@ The LUT model applies **one** colour mapping to every pixel, so it structurally 
 | Mask | Model | Notes |
 |---|---|---|
 | Subject | [BiRefNet-lite](https://github.com/zhengpeng7/birefnet), 44M params, MIT | Crisp cutouts; the "Select Subject" equivalent |
-| Sky | SegFormer-B0 / ADE20K | Coarse but fine for sky, which is graded softly anyway |
+| Sky / scene | SegFormer-B0 / ADE20K | Coarse but fine for sky, which is graded softly anyway. Also reports what else is in the frame, which gates the other recipes |
+| Depth | [Depth Anything V2 Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf), 24.8M params, Apache-2.0 | Lightroom's Depth Range Mask. Grades by distance, so it still works where subject segmentation finds nothing |
 
-Recipes: **Selective Colour** (subject in colour, background mono), **Subject Pop**, **Sky Drama**.
+Recipes: **Selective Colour** (subject in colour, background mono), **Subject Pop**, **Sky Drama**, **Depth Pop**, **Aerial Depth**, **Foliage**. Only the ones the photo can actually support are offered — Aerial Depth needs outdoor content, Foliage needs greenery, and the depth looks need the scene to span a depth range at all.
 
-Masking failures degrade to the ordinary global styles rather than failing the import. A recipe is skipped when mask coverage is degenerate (<1% or >95%) — grading through such a mask looks like a bug rather than a style.
+**Masks are computed once and reused.** They are produced at 1024 px, persisted next to the import as PNG, and resampled to whatever the output needs. That is not a shortcut: BiRefNet resizes its input to 1024×1024 internally, so segmenting the full 6000 px image yields the same prediction upscaled. Previously the preview and the full-resolution download segmented independently and disagreed (measured 0.2120 vs 0.1873 sky coverage on one photo), so the file you downloaded was not the grade you approved.
+
+Masking failures degrade to the ordinary global styles rather than failing the import. A recipe is skipped when the mask is degenerate — judged on **confidence as well as area**, because area alone cannot tell "found nothing" from "found something small": a bird on a wire covers 0.9 % of the frame and is exactly the photo Selective Colour is for.
+
+**Region strength.** A slider on each import dials the region recipes back toward the ungraded image; the value is part of the render cache key. It attenuates the whole-frame layers too, not just the masks — in Selective Colour the mono conversion *is* a whole-frame layer, so scaling only the subject mask would leave the background fully black & white however far the slider was pulled back. Downloads take `?strength=0.0…1.0`.
 
 ### Crop suggestions (enhanced mode)
 
@@ -68,9 +73,9 @@ Each user holds **their own** Immich URL and API key, so imports read from their
 | | classic | enhanced |
 |---|---|---|
 | Colour correction + 18 style presets | ✓ | ✓ |
-| Subject / sky region grading | — | ✓ |
+| Subject / sky / depth region grading | — | ✓ |
 | Crop suggestions | — | ✓ |
-| Extra RAM while processing | none | ~1.2 GB |
+| Extra RAM while processing | none | ~1.25 GB |
 | Time per photo (6-core i5-10500T) | ~5 s | ~17 s |
 
 Switch in **Settings**. Defaults to `classic`.

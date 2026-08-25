@@ -177,7 +177,7 @@ async def get_settings(user: str = Depends(current_user)):
 @app.post("/api/settings")
 async def post_settings(request: Request, user: str = Depends(require_admin)):
     form = dict(await request.form())
-    for flag in ("subject_masking", "sky_masking", "cinematic_presets"):
+    for flag in ("subject_masking", "sky_masking", "depth_masking", "cinematic_presets"):
         form[flag] = flag in form  # unchecked checkboxes simply aren't submitted
     return settings.update(form)
 
@@ -310,10 +310,12 @@ async def gallery_thumb(import_id: str, style_key: str, user: str = Depends(curr
 
 @app.get("/api/gallery/{import_id}/{style_key}.jpg")
 async def gallery_render_full(import_id: str, style_key: str, crop: str | None = None,
+                              strength: float = 1.0,
                               user: str = Depends(current_user)):
     _owned(import_id, user)
     try:
-        path = await pipeline.render_full_style(import_id, style_key, crop_key=crop)
+        path = await pipeline.render_full_style(import_id, style_key, crop_key=crop,
+                                                strength=strength)
     except (FileNotFoundError, KeyError):
         raise HTTPException(404, "unknown import or style")
     except Exception as e:
