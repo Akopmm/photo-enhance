@@ -2,7 +2,7 @@ name: Build and publish image
 
 on:
   push:
-    branches: [main]
+    branches: [main, enhanced]
 
 jobs:
   build:
@@ -13,6 +13,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A SyntaxError anywhere in an inline <script> kills that whole block,
+      # so the page silently does nothing. That shipped once (a duplicate
+      # `const url` broke the gallery entirely) because the backend was
+      # tested via curl and the page was never loaded afterwards.
+      - name: Syntax-check inline page JavaScript
+        run: |
+          python3 - <<'EOF'
+          import re, pathlib, subprocess, sys
+          fail = False
+          for f in pathlib.Path("service/static").glob("*.html"):
+              for i, js in enumerate(re.findall(r"<script>(.*?)</script>", f.read_text(), re.S)):
+                  p = pathlib.Path(f"/tmp/{f.name}.{i}.js"); p.write_text(js)
+                  r = subprocess.run(["node", "--check", str(p)], capture_output=True, text=True)
+                  print(f"{f.name}[{i}]: {'OK' if r.returncode == 0 else 'SYNTAX ERROR'}")
+                  if r.returncode:
+                      print(r.stderr); fail = True
+          sys.exit(1 if fail else 0)
+          EOF
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -20,10 +39,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # main -> :latest (the stable service optiplex runs on :5054)
+      # enhanced -> :next (deployed alongside on :5055, never overwrites :latest)
+      - name: Pick image tag
+        id: tag
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=next" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
           file: service/Dockerfile
           push: true
-          tags: ghcr.io/akopmm/photo-enhance:latest
+          tags: ghcr.io/akopmm/photo-enhance:${{ steps.tag.outputs.tag }}

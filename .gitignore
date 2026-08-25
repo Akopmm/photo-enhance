@@ -10,3 +10,6 @@ service/data/renders/
 service/.venv/
 service/data/
 service/.env
+experiments/.venv/
+experiments/out/
+experiments/

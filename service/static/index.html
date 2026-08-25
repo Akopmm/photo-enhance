@@ -28,13 +28,27 @@
   .styles-grid button.dl-style.busy img { opacity: 0.4; }
   .styles-grid button.dl-style.busy::after { content: "rendering…"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 0.68rem; background: #0006; border-radius: 6px; }
   .row { display: flex; justify-content: space-between; align-items: center; }
+  .crop-row { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+  .crop-opt { display: flex; flex-direction: column; align-items: center; gap: 0.15rem;
+              width: 92px; padding: 0.3rem; border-radius: 8px; cursor: pointer;
+              border: 1px solid #8886; background: none; color: inherit; font: inherit; }
+  .crop-opt img { width: 100%; height: 62px; object-fit: contain; border-radius: 4px; background: #8881; }
+  .crop-opt span { font-size: 0.7rem; }
+  .crop-opt em { font-size: 0.62rem; opacity: 0.6; font-style: normal; }
+  .crop-opt.active { border-color: #7c7cf5; box-shadow: 0 0 0 1px #7c7cf5; }
   button.small { font-size: 0.8rem; padding: 0.3rem 0.6rem; border-radius: 6px; border: 1px solid #8886; background: none; cursor: pointer; }
   #status { font-size: 0.85rem; opacity: 0.7; margin-bottom: 0.5rem; min-height: 1.2em; }
 </style>
 </head>
 <body>
 
-<h1>photo-enhance</h1>
+<div style="display:flex; justify-content:space-between; align-items:center;">
+  <h1 style="margin:0;">photo-enhance</h1>
+  <div style="font-size:0.85rem;">
+    <span id="whoami" style="opacity:0.6;"></span>
+    <a href="/settings" style="margin-left:0.6rem; color:#7c7cf5;">Settings</a>
+  </div>
+</div>
 <div id="status"></div>
 
 <nav>
@@ -197,6 +211,26 @@ async function loadGallery() {
         <button class="small" data-del="${imp.id}">Delete</button>
       </div>
       <div style="font-size:0.75rem; opacity:0.6; margin-bottom:0.5rem;">${date}</div>
+      ${(imp.crops && imp.crops.length) ? `
+      <div style="margin-bottom:0.6rem;">
+        <div style="font-size:0.75rem; opacity:0.7; margin-bottom:0.3rem;">
+          Suggested crops <span style="opacity:0.6">— pick a style below, then a crop</span>
+        </div>
+        <div class="crop-row">
+          <button class="crop-opt active" data-crop="">
+            <img src="/api/gallery/${imp.id}/original_thumb.jpg" loading="lazy" />
+            <span>Full frame</span>
+          </button>
+          ${imp.crops.map(c => `
+          <button class="crop-opt" data-crop="${c.key}" title="${c.rationale}">
+            <img src="/api/gallery/${imp.id}/crop_${c.key}_thumb.jpg" loading="lazy" />
+            <span>${c.label}</span>
+            <em>${c.subject_coverage !== undefined && c.subject_coverage < 0.999
+                  ? Math.round(c.subject_coverage*100) + '% of subject'
+                  : Math.round(c.kept_fraction*100) + '% of frame'}</em>
+          </button>`).join('')}
+        </div>
+      </div>` : ''}
       <div class="styles-grid">
         <figure>
           <img src="/api/gallery/${imp.id}/original_thumb.jpg" loading="lazy" />
@@ -216,29 +250,41 @@ async function loadGallery() {
       loadGallery();
     });
     card.querySelectorAll('.dl-style').forEach(btn => {
-      btn.addEventListener('click', () => downloadFullRes(btn));
+      btn.addEventListener('click', () => downloadFullRes(btn, card.dataset.crop || ''));
+    });
+    card.querySelectorAll('.crop-opt').forEach(pill => {
+      pill.addEventListener('click', () => {
+        card.querySelectorAll('.crop-opt').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        card.dataset.crop = pill.dataset.crop;
+        const name = pill.querySelector('span') ? pill.querySelector('span').textContent : 'crop';
+        setStatus(pill.dataset.crop
+          ? `Crop "${name}" selected — downloads from this photo will use it.`
+          : 'Full frame selected.');
+      });
     });
     list.appendChild(card);
   }
 }
 
-async function downloadFullRes(btn) {
+async function downloadFullRes(btn, cropKey) {
   if (btn.classList.contains('busy')) return;
   const { import: importId, style, name } = btn.dataset;
   btn.classList.add('busy');
   setStatus('Rendering full resolution… (first time only, ~10-20s)');
   try {
-    const res = await fetch(`/api/gallery/${importId}/${style}.jpg`);
+    const reqUrl = `/api/gallery/${importId}/${style}.jpg` + (cropKey ? `?crop=${cropKey}` : '');
+    const res = await fetch(reqUrl);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
+    const objUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = `${name}_${style}.jpg`;
+    a.href = objUrl;
+    a.download = `${name}_${style}${cropKey ? '_' + cropKey : ''}.jpg`;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(objUrl);
     setStatus('Downloaded.');
   } catch (e) {
     setStatus('Full-resolution render failed: ' + e, true);
@@ -246,6 +292,13 @@ async function downloadFullRes(btn) {
     btn.classList.remove('busy');
   }
 }
+
+fetch('/api/me').then(r => r.json()).then(m => {
+  document.getElementById('whoami').textContent = m.username || '';
+  if (!m.immich_api_key_set) {
+    setStatus('No Immich API key configured yet — add one in Settings to browse your library.', true);
+  }
+}).catch(() => {});
 
 loadAlbums();
 loadImmichGrid('');

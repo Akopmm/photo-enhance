@@ -25,13 +25,17 @@ def _import_dir(import_id: str) -> str:
     return os.path.join(ROOT, import_id)
 
 
-def create_import(source_name: str, source_type: str, immich_asset_id: str | None = None) -> str:
-    """source_type: 'immich' or 'upload'."""
+def create_import(source_name: str, source_type: str, immich_asset_id: str | None = None,
+                  owner: str = "") -> str:
+    """source_type: 'immich' or 'upload'. `owner` scopes the import to one
+    user -- galleries are per-user, and every read path checks ownership
+    (see owns()) rather than relying on uuids being unguessable."""
     import_id = uuid.uuid4().hex
     d = _import_dir(import_id)
     os.makedirs(d, exist_ok=True)
     meta = {
         "id": import_id,
+        "owner": owner,
         "source_name": source_name,
         "source_type": source_type,
         "immich_asset_id": immich_asset_id,
@@ -115,16 +119,65 @@ def get_import(import_id: str) -> dict | None:
     return _read_meta(import_id)
 
 
-def list_imports() -> list[dict]:
+def list_imports(owner: str | None = None) -> list[dict]:
     if not os.path.isdir(ROOT):
         return []
     items = []
     for name in os.listdir(ROOT):
         meta = _read_meta(name)
-        if meta:
-            items.append(meta)
+        if not meta:
+            continue
+        if owner is not None and meta.get("owner", "") != owner:
+            continue
+        items.append(meta)
     items.sort(key=lambda m: m["created_at"], reverse=True)
     return items
+
+
+def save_crop_thumb(import_id: str, crop_key: str, jpeg_bytes: bytes):
+    with open(os.path.join(_import_dir(import_id), f"crop_{crop_key}_thumb.jpg"), "wb") as f:
+        f.write(jpeg_bytes)
+
+
+def crop_thumb_path(import_id: str, crop_key: str) -> str:
+    return os.path.join(_import_dir(import_id), f"crop_{crop_key}_thumb.jpg")
+
+
+def save_crops(import_id: str, crops: list, ref_w: int, ref_h: int):
+    """Crop suggestions are computed against the preview, so the reference
+    dimensions travel with them -- callers scale to whatever resolution they
+    are actually cropping."""
+    meta = _read_meta(import_id)
+    if not meta:
+        return
+    meta["crops"] = crops
+    meta["crop_ref"] = {"w": ref_w, "h": ref_h}
+    _write_meta(import_id, meta)
+
+
+def owns(import_id: str, username: str) -> bool:
+    meta = _read_meta(import_id)
+    return bool(meta) and meta.get("owner", "") == username
+
+
+def claim_unowned(username: str) -> int:
+    """Assign imports that predate multi-user support to `username`.
+
+    Galleries are filtered by owner, so without this, upgrading an existing
+    single-user instance would make every previously-imported photo silently
+    disappear -- the files are still there, they just match nobody. Runs once
+    at startup for the first admin. Returns how many were claimed.
+    """
+    if not os.path.isdir(ROOT) or not username:
+        return 0
+    claimed = 0
+    for name in os.listdir(ROOT):
+        meta = _read_meta(name)
+        if meta and not meta.get("owner"):
+            meta["owner"] = username
+            _write_meta(name, meta)
+            claimed += 1
+    return claimed
 
 
 def delete_import(import_id: str):

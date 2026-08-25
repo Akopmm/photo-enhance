@@ -6,3 +6,7 @@ rawpy
 pillow
 numpy
 openvino
+transformers
+timm
+einops
+kornia
