@@ -34,6 +34,21 @@ IDLE_UNLOAD_MINUTES = float(os.environ.get("IDLE_UNLOAD_MINUTES", "15"))
 INFERENCE_DEVICE = os.environ.get("INFERENCE_DEVICE", "cpu")
 
 
+def _return_arenas_to_os():
+    """gc.collect() frees the objects, but glibc keeps the arenas, so RSS
+    barely moves and creeps upward across load/unload cycles (measured
+    1643 -> 1870 -> 1991 MB over three enhanced imports). malloc_trim hands
+    the free arenas back, which is what actually matters inside a container
+    where RSS is the number the host sees. Linux/glibc only -- absent on
+    macOS and musl, so failure here is normal and not worth logging loudly.
+    """
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 def compile_for_device(fn):
     """Wrap a plain function or bound method with torch.compile targeting
     the configured OpenVINO device, or return it unchanged for "cpu"."""
@@ -71,16 +86,44 @@ class ModelRuntime:
         return model
 
     def _unload(self):
+        released = False
         if self._model is not None:
             self._model = None
             self._render_style = None
+            released = True
+
+        # The segmentation models are ~1.2GB -- vastly more than the 2.4MB
+        # colour model -- and they cache themselves on first use in
+        # masking._cache. Releasing only the colour model (as this once did)
+        # meant enhanced mode permanently held that 1.2GB after a single
+        # photo, which defeats the whole point of idle-unloading. Import
+        # lazily so classic mode never pulls transformers in at all.
+        try:
+            import masking
+            if masking.loaded():
+                masking.unload()
+                released = True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("could not release segmentation models: %s", e)
+
+        if released:
             gc.collect()
-            logger.info("model idle-unloaded after %.1f min", IDLE_UNLOAD_MINUTES)
+            _return_arenas_to_os()
+            logger.info("models idle-unloaded after %.1f min", IDLE_UNLOAD_MINUTES)
 
     async def _watchdog(self):
         while True:
             await asyncio.sleep(60)
-            if self._model is not None and (time.time() - self._last_used) > IDLE_UNLOAD_MINUTES * 60:
+            if (time.time() - self._last_used) <= IDLE_UNLOAD_MINUTES * 60:
+                continue
+            try:
+                import masking
+                seg_loaded = masking.loaded()
+            except Exception:  # noqa: BLE001
+                seg_loaded = False
+            # Segmentation can outlive the colour model, so gate on either
+            # being resident rather than on self._model alone.
+            if self._model is not None or seg_loaded:
                 async with self._lock:
                     self._unload()
 
@@ -122,9 +165,15 @@ class ModelRuntime:
             return out
 
     def status(self) -> dict:
+        try:
+            import masking
+            seg = masking.loaded()
+        except Exception:  # noqa: BLE001
+            seg = False
         return {
             "weights_available": self.weights_available(),
             "loaded": self._model is not None,
+            "segmentation_loaded": seg,
             "idle_unload_minutes": IDLE_UNLOAD_MINUTES,
             "inference_device": INFERENCE_DEVICE,
         }

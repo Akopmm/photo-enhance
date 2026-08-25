@@ -168,6 +168,11 @@ def refine(mask: np.ndarray, threshold: float | None = None,
     return feather(m, feather_px)
 
 
+def loaded() -> bool:
+    """Whether any segmentation model is currently resident."""
+    return bool(_cache)
+
+
 def unload():
     """Drop all segmentation models (they're the RAM-heavy part)."""
     _cache.clear()
