@@ -15,7 +15,16 @@ import os
 import threading
 
 DATA_DIR = os.environ.get("RENDER_STORAGE_DIR", os.path.join(os.path.dirname(__file__), "data", "renders"))
-SETTINGS_PATH = os.path.join(os.path.dirname(DATA_DIR.rstrip("/")), "settings.json")
+
+# Config lives INSIDE the render-storage directory, because that is the path
+# that is actually bind-mounted as a volume. Writing it to DATA_DIR's *parent*
+# (as this once did) puts it in the container's ephemeral layer instead, so
+# every image update silently wiped all users, their Immich API keys and the
+# session secret -- while login still appeared to work, because the admin
+# account is re-bootstrapped from env on startup. Keep these paths under
+# DATA_DIR or that failure comes straight back.
+CONFIG_DIR = os.path.join(DATA_DIR, "_config")
+SETTINGS_PATH = os.path.join(CONFIG_DIR, "settings.json")
 
 _lock = threading.Lock()
 _cache = None
