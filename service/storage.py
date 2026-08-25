@@ -134,6 +134,18 @@ def list_imports(owner: str | None = None) -> list[dict]:
     return items
 
 
+def save_crops(import_id: str, crops: list, ref_w: int, ref_h: int):
+    """Crop suggestions are computed against the preview, so the reference
+    dimensions travel with them -- callers scale to whatever resolution they
+    are actually cropping."""
+    meta = _read_meta(import_id)
+    if not meta:
+        return
+    meta["crops"] = crops
+    meta["crop_ref"] = {"w": ref_w, "h": ref_h}
+    _write_meta(import_id, meta)
+
+
 def owns(import_id: str, username: str) -> bool:
     meta = _read_meta(import_id)
     return bool(meta) and meta.get("owner", "") == username

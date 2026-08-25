@@ -9,7 +9,11 @@ WORKDIR /app
 # CPU-only torch wheel explicitly: this deploys to a box with no discrete
 # GPU, and the default wheel would drag in multi-GB CUDA libraries it can
 # never use.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+# torchvision MUST come from the same CPU index and be resolved together with
+# torch -- timm pulls torchvision in transitively, and letting pip fetch it
+# from the default index yields a CUDA build whose compiled ops don't match
+# this torch ("operator torchvision::nms does not exist" at import time).
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 COPY service/requirements.txt ./service/requirements.txt
 RUN pip install --no-cache-dir -r service/requirements.txt

@@ -288,10 +288,11 @@ async def gallery_thumb(import_id: str, style_key: str, user: str = Depends(curr
 
 
 @app.get("/api/gallery/{import_id}/{style_key}.jpg")
-async def gallery_render_full(import_id: str, style_key: str, user: str = Depends(current_user)):
+async def gallery_render_full(import_id: str, style_key: str, crop: str | None = None,
+                              user: str = Depends(current_user)):
     _owned(import_id, user)
     try:
-        path = await pipeline.render_full_style(import_id, style_key)
+        path = await pipeline.render_full_style(import_id, style_key, crop_key=crop)
     except (FileNotFoundError, KeyError):
         raise HTTPException(404, "unknown import or style")
     except Exception as e:

@@ -27,6 +27,7 @@ import rawpy
 import torch
 from PIL import Image
 
+import cropping
 import immich_client
 import region_grade as rg
 import settings
@@ -210,6 +211,13 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
                 b = await asyncio.to_thread(_array_to_jpeg_bytes, out, THUMB_QUALITY)
                 await asyncio.to_thread(storage.save_preview, import_id, key, label, b)
 
+            # Composition suggestions ride along on the subject mask we just
+            # computed, so they cost essentially nothing extra.
+            h, w = base_small.shape[:2]
+            crops = await asyncio.to_thread(
+                cropping.suggest_crops, w, h, masks.get("subject"))
+            await asyncio.to_thread(storage.save_crops, import_id, crops, w, h)
+
     logger.info("preview: %s -> %s (user=%s, mode=%s)", filename, import_id,
                 username, settings.get("mode"))
     return import_id
@@ -224,16 +232,18 @@ async def _get_original_bytes(import_id: str) -> tuple[bytes, str]:
     return data, meta["source_name"] or name
 
 
-async def render_full_style(import_id: str, style_key: str) -> str:
-    """Full-resolution render of one style, on first request, then cached."""
-    if storage.full_render_exists(import_id, style_key):
-        return storage.full_render_path(import_id, style_key)
+async def render_full_style(import_id: str, style_key: str, crop_key: str | None = None) -> str:
+    """Full-resolution render of one style, on first request, then cached.
+    `crop_key` optionally applies one of the stored composition suggestions."""
+    cache_key = style_key if not crop_key else f"{style_key}__{crop_key}"
+    if storage.full_render_exists(import_id, cache_key):
+        return storage.full_render_path(import_id, cache_key)
 
     global_styles = {k: p for k, _l, p in _style_list()}
 
     async with _pipeline_gate:
-        if storage.full_render_exists(import_id, style_key):
-            return storage.full_render_path(import_id, style_key)
+        if storage.full_render_exists(import_id, cache_key):
+            return storage.full_render_path(import_id, cache_key)
 
         raw_bytes, filename = await _get_original_bytes(import_id)
         arr = await asyncio.to_thread(_decode_full, raw_bytes, filename)
@@ -255,7 +265,18 @@ async def render_full_style(import_id: str, style_key: str) -> str:
             out = await asyncio.to_thread(rg.region_grade, base_arr, recipe)
             jpeg = await asyncio.to_thread(_array_to_jpeg_bytes, out, _jpeg_quality())
 
-        await asyncio.to_thread(storage.save_full_render, import_id, style_key, jpeg)
+        if crop_key:
+            meta = storage.get_import(import_id) or {}
+            crop = next((c for c in meta.get("crops", []) if c["key"] == crop_key), None)
+            if crop is None:
+                raise KeyError(f"unknown crop {crop_key!r}")
+            ref = meta.get("crop_ref", {})
+            crop = dict(crop, ref_w=ref.get("w"), ref_h=ref.get("h"))
+            full = np.asarray(Image.open(io.BytesIO(jpeg)).convert("RGB"))
+            jpeg = await asyncio.to_thread(
+                _array_to_jpeg_bytes, cropping.apply_crop(full, crop), _jpeg_quality())
 
-    logger.info("full render: %s / %s", import_id, style_key)
-    return storage.full_render_path(import_id, style_key)
+        await asyncio.to_thread(storage.save_full_render, import_id, cache_key, jpeg)
+
+    logger.info("full render: %s / %s", import_id, cache_key)
+    return storage.full_render_path(import_id, cache_key)
