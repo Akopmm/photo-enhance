@@ -56,6 +56,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--names_file", type=str, default="fivek_all_names.txt")
     ap.add_argument("--n_images", type=int, default=5000)
+    ap.add_argument("--skip", type=int, default=0,
+                    help="skip the first N names of the (seeded, shuffled) list -- lets the "
+                         "dataset be fetched in disk-safe batches without re-downloading")
     ap.add_argument("--out", type=str, default="data/fiveK_raw")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--seed", type=int, default=42)
@@ -65,7 +68,7 @@ def main():
         all_names = [line.strip() for line in f if line.strip()]
     rng = random.Random(args.seed)
     rng.shuffle(all_names)
-    names = all_names[: args.n_images]
+    names = all_names[args.skip: args.skip + args.n_images]
 
     dng_dir = os.path.join(args.out, "dng")
     tif_dir = os.path.join(args.out, "tiff16_c")

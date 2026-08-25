@@ -72,6 +72,14 @@ def main():
     ap.add_argument("--checkpoint_dir", type=str, default="checkpoints")
     ap.add_argument("--batch_size", type=int, default=32)
     ap.add_argument("--eval_every", type=int, default=5, help="run the (slow, one-image-at-a-time) test-set PSNR eval every N epochs")
+    ap.add_argument("--eval_subset", type=int, default=250,
+                    help="cap eval to this many test images (they're evaluated one at a time at "
+                         "native resolution, so a large test set makes eval dominate epoch time). "
+                         "A fixed prefix, so the number stays comparable across epochs/runs.")
+    ap.add_argument("--cosine", action="store_true", default=True,
+                    help="cosine-anneal the LR to ~0 over the run (default on). A flat LR was "
+                         "what stalled the first attempt well short of convergence.")
+    ap.add_argument("--no_cosine", dest="cosine", action="store_false")
     ap.add_argument("--resume", type=str, default=None, help="path to a checkpoint .pt to resume from")
     ap.add_argument("--num_workers", type=int, default=4)
     args = ap.parse_args()
@@ -83,7 +91,9 @@ def main():
 
     train_ds = FiveKDataset(args.data_root, split="train")
     test_ds = FiveKDataset(args.data_root, split="test")
-    print(f"train: {len(train_ds)} images, test: {len(test_ds)} images")
+    if args.eval_subset and len(test_ds) > args.eval_subset:
+        test_ds = torch.utils.data.Subset(test_ds, range(args.eval_subset))
+    print(f"train: {len(train_ds)} images, eval: {len(test_ds)} images")
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=1)
@@ -100,6 +110,13 @@ def main():
         print(f"resumed from {args.resume} at epoch {start_epoch}")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999))
+    scheduler = (
+        torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.n_epochs, eta_min=args.lr * 0.01)
+        if args.cosine else None
+    )
+    if scheduler and start_epoch:
+        for _ in range(start_epoch):
+            scheduler.step()
 
     mse_loss_fn = torch.nn.MSELoss()
 
@@ -150,16 +167,22 @@ def main():
             test_psnr = evaluate(model, test_loader, device)
             is_best = test_psnr > best_psnr
             best_psnr = max(best_psnr, test_psnr)
-            print(f"== epoch {epoch} done in {time.time() - t0:.1f}s, test PSNR={test_psnr:.2f} (best={best_psnr:.2f}) ==")
+            lr_now = optimizer.param_groups[0]["lr"]
+            print(f"== epoch {epoch} done in {time.time() - t0:.1f}s, lr={lr_now:.2e}, "
+                  f"test PSNR={test_psnr:.2f} (best={best_psnr:.2f}) ==", flush=True)
         else:
             test_psnr = None
             is_best = False
-            print(f"== epoch {epoch} done in {time.time() - t0:.1f}s (no eval this epoch) ==")
+            print(f"== epoch {epoch} done in {time.time() - t0:.1f}s (no eval this epoch) ==", flush=True)
 
-        ckpt = {"model": model.state_dict(), "epoch": epoch, "test_psnr": test_psnr, "args": vars(args)}
+        ckpt = {"model": model.state_dict(), "epoch": epoch, "test_psnr": test_psnr,
+                "best_psnr": best_psnr, "args": vars(args)}
         torch.save(ckpt, os.path.join(args.checkpoint_dir, "last.pt"))
         if is_best:
             torch.save(ckpt, os.path.join(args.checkpoint_dir, "best.pt"))
+
+        if scheduler:
+            scheduler.step()
 
 
 if __name__ == "__main__":

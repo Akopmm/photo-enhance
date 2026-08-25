@@ -12,6 +12,7 @@ Usage:
     python3 process_raw.py --raw_dir data/fiveK_raw --out data/fiveK --workers 4
 """
 import argparse
+import hashlib
 import os
 import random
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -97,15 +98,24 @@ def main():
             if (i + 1) % 50 == 0 or (i + 1) == len(names):
                 print(f"[{i + 1}/{len(names)}] ok={ok} errors={len(errors)}", flush=True)
 
+    # Scan the OUTPUT dir, not this batch's raw dir: the dataset is fetched in
+    # disk-safe batches (raws deleted after each), so the split has to be
+    # rebuilt from everything processed so far, not just what's on disk now.
     good_names = sorted(
-        n for n in names
-        if os.path.exists(os.path.join(input_dir, n + ".jpg"))
-        and os.path.exists(os.path.join(expert_dir, n + ".jpg"))
+        f[:-4] for f in os.listdir(input_dir)
+        if f.endswith(".jpg") and os.path.exists(os.path.join(expert_dir, f))
     )
 
-    rng = random.Random(args.seed)
-    n_test = max(1, round(len(good_names) * args.test_fraction))
-    test_names = set(rng.sample(good_names, n_test))
+    # Deterministic per-name assignment, NOT a re-randomized sample: with
+    # incremental batches, re-sampling each time would shuffle images between
+    # train and test as the set grows, leaking test images into training and
+    # making eval numbers meaningless across runs. Hashing the name pins each
+    # image to one side forever, regardless of dataset size or batch order.
+    def is_test(name: str) -> bool:
+        h = hashlib.sha1(f"{args.seed}:{name}".encode()).digest()
+        return (int.from_bytes(h[:4], "big") % 1000) < round(args.test_fraction * 1000)
+
+    test_names = {n for n in good_names if is_test(n)}
     train_names = [n for n in good_names if n not in test_names]
 
     with open(os.path.join(args.out, "train_input.txt"), "w") as f:
