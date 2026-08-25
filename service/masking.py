@@ -202,9 +202,16 @@ def depth_band(depth: np.ndarray, near: float, far: float, softness: float = 0.1
     """
     lo, hi = min(near, far), max(near, far)
     s = max(softness, 1e-3)
-    rising = np.clip((depth - (lo - s)) / s, 0, 1)
-    falling = np.clip(((hi + s) - depth) / s, 0, 1)
-    return (rising * falling).astype(np.float32)
+    # Built in place: at 6000x4000 each temporary is ~96MB, and the naive
+    # form allocated three of them per band.
+    rising = np.subtract(depth, lo - s, dtype=np.float32)
+    rising /= s
+    np.clip(rising, 0, 1, out=rising)
+    falling = np.subtract(hi + s, depth, dtype=np.float32)
+    falling /= s
+    np.clip(falling, 0, 1, out=falling)
+    rising *= falling
+    return rising
 
 
 # ---------------- text prompt (CLIPSeg) ----------------

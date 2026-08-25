@@ -65,7 +65,8 @@ def _thumb_edge() -> int:
     return int(settings.get("thumb_long_edge") or 480)
 
 
-def _decode_full(raw_bytes: bytes, filename: str, no_auto_bright: bool = True) -> np.ndarray:
+def _decode_full(raw_bytes: bytes, filename: str, no_auto_bright: bool = True,
+                 half_size: bool = False) -> np.ndarray:
     """(H, W, 3) float32 in [0,1] at native resolution.
 
     no_auto_bright=True (the model's input) is a deliberately flat rendering
@@ -84,6 +85,7 @@ def _decode_full(raw_bytes: bytes, filename: str, no_auto_bright: bool = True) -
                     no_auto_bright=no_auto_bright,
                     output_bps=8,
                     output_color=rawpy.ColorSpace.sRGB,
+                    half_size=half_size,
                 )
         img = Image.fromarray(rgb)
     else:
@@ -174,14 +176,39 @@ def _load_masks(import_id: str) -> dict:
     return out
 
 
-def _prepare_masks(stored: dict, size: tuple[int, int]) -> dict:
+# Which prepared masks each recipe actually consumes. render_full_style
+# renders exactly one style, so preparing all five at 6000x4000 (~96MB each,
+# plus depth-band transients) burned over a gigabyte on masks the chosen
+# recipe never touched. That doubled peak RSS per job, and at
+# max_concurrent_jobs=3 it took the box to its 15GB ceiling.
+_RECIPE_MASKS = {
+    "selective_color": ("subject",),
+    "subject_pop": ("subject",),
+    "sky_drama": ("sky",),
+    "depth_pop": ("near", "far"),
+    "depth_haze": ("near", "far"),
+    "foliage_lift": ("foliage",),
+}
+
+# Prepared-mask name -> the stored mask it derives from.
+_MASK_SOURCE = {"near": "depth", "far": "depth"}
+
+
+def _prepare_masks(stored: dict, size: tuple[int, int], only: tuple | None = None) -> dict:
     """Resample stored masks to (w, h) and feather relative to THAT size.
 
     Storing raw alpha and feathering per-target is what keeps the preview and
     the full render visually identical -- the mask itself is resolution
     independent, only its softening is not.
+
+    `only` restricts the work to the prepared masks named, which matters at
+    full resolution where each one is ~96MB. The preview path leaves it None
+    because it needs every recipe and its masks are 480px anyway.
     """
     import masking
+    if only is not None:
+        wanted = {_MASK_SOURCE.get(n, n) for n in only}
+        stored = {k: v for k, v in stored.items() if k in wanted}
     out = {}
     for key, mask in stored.items():
         m = masking.resample(mask, size)
@@ -196,8 +223,11 @@ def _prepare_masks(stored: dict, size: tuple[int, int]) -> dict:
             # so every output size cuts the bands at exactly the same depth.
             near_edge = float(np.percentile(mask, 100 - NEAR_BAND_PCT))
             far_edge = float(np.percentile(mask, FAR_BAND_PCT))
-            out["near"] = masking.depth_band(m, near_edge, 1.0)
-            out["far"] = masking.depth_band(m, 0.0, far_edge)
+            if only is None or "near" in only:
+                out["near"] = masking.depth_band(m, near_edge, 1.0)
+            if only is None or "far" in only:
+                out["far"] = masking.depth_band(m, 0.0, far_edge)
+            del m
         else:
             out[key] = masking.refine(m, feather_frac=_FEATHER.get(key, 0.006))
     return out
@@ -311,6 +341,7 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
         tensor = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).contiguous()
 
         baseline = await runtime.infer(tensor)
+        arr = tensor = None  # ~576MB of decode buffers, dead once inferred
         edge = _thumb_edge()
         small_baseline = await asyncio.to_thread(_resize_tensor, baseline, edge)
 
@@ -319,9 +350,14 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
         if source_type == "upload":
             await asyncio.to_thread(storage.save_source_upload, import_id, raw_bytes, filename)
 
-        normal_arr = await asyncio.to_thread(_decode_full, raw_bytes, filename, False)
+        # half_size: this decode exists only to make a ~480px "Original"
+        # thumbnail, so a full 6000px decode was ~430MB of peak RSS and ~0.4s
+        # spent to throw 97% of the pixels away immediately.
+        normal_arr = await asyncio.to_thread(_decode_full, raw_bytes, filename, False, True)
         normal_t = torch.from_numpy(normal_arr).permute(2, 0, 1).unsqueeze(0).contiguous()
+        normal_arr = None
         small_normal = await asyncio.to_thread(_resize_tensor, normal_t, edge)
+        normal_t = None
         orig_bytes = await asyncio.to_thread(_tensor_to_jpeg_bytes, small_normal, THUMB_QUALITY)
         await asyncio.to_thread(storage.save_original_thumb, import_id, orig_bytes)
 
@@ -408,6 +444,7 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
         arr = await asyncio.to_thread(_decode_full, raw_bytes, filename)
         tensor = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).contiguous()
         baseline = await runtime.infer(tensor)
+        arr = tensor = None
 
         if style_key in global_styles:
             styled = await runtime.render_style(baseline, global_styles[style_key])
@@ -422,7 +459,8 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
             base_arr = baseline.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
             h, w = base_arr.shape[:2]
             stored_masks, scene = await _masks_for(import_id, baseline)
-            masks = _prepare_masks(stored_masks, (w, h))
+            masks = _prepare_masks(stored_masks, (w, h), only=_RECIPE_MASKS.get(style_key))
+            stored_masks = None  # 1024px originals are dead weight from here
             recipe = next((r for k, _l, r in _region_recipes(masks, scene) if k == style_key), None)
             if recipe is None:
                 raise KeyError(f"unknown or unavailable style {style_key!r}")
