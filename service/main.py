@@ -80,6 +80,7 @@ async def health():
         "model": runtime.status(),
         "mode": settings.get("mode"),
         "max_concurrent_jobs": settings.get("max_concurrent_jobs"),
+        "max_concurrent_renders": settings.get("max_concurrent_renders"),
         "users_configured": auth.any_users(),
     }
 

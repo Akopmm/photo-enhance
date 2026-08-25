@@ -53,6 +53,14 @@ _pipeline_gate = asyncio.Semaphore(settings.get("max_concurrent_jobs") or 3)
 # concurrent enhanced jobs would hold ~3.5GB of segmentation state at once.
 _mask_gate = asyncio.Semaphore(1)
 
+# Full-resolution renders are the heavy path: measured ~3.5GB peak RSS each
+# on optiplex, against ~2.5GB for an import. Three at once is ~10.5GB, which
+# on a 15GB box already running Immich/Jellyfin/Postgres leaves no headroom
+# -- that is how a burst of downloads took the host to its ceiling. This gate
+# is acquired BEFORE _pipeline_gate so a waiting render doesn't sit on a
+# pipeline slot while it queues.
+_render_gate = asyncio.Semaphore(settings.get("max_concurrent_renders") or 2)
+
 RAW_EXTENSIONS = {".cr3", ".cr2", ".arw", ".dng", ".nef", ".raf", ".orf", ".rw2"}
 THUMB_QUALITY = 82
 
@@ -436,7 +444,7 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
 
     global_styles = {k: p for k, _l, p in _style_list()}
 
-    async with _pipeline_gate:
+    async with _render_gate, _pipeline_gate:
         if storage.full_render_exists(import_id, cache_key):
             return storage.full_render_path(import_id, cache_key)
 

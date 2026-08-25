@@ -116,6 +116,9 @@
       <option value="enhanced">Enhanced — adds subject / sky aware region grading</option>
     </select>
     <div class="hint">
+      <b>Max concurrent renders</b> is separate from jobs because a full-resolution region
+      render peaks around 3.5&nbsp;GB against ~2.5&nbsp;GB for an import &mdash; three at once
+      will exhaust a 15&nbsp;GB host.<br>
       Enhanced runs segmentation models (~1.2&nbsp;GB RAM, several seconds per photo on CPU)
       to grade the subject, the sky, foliage and depth separately. Classic skips them entirely.
     </div>
@@ -133,6 +136,10 @@
       <div>
         <label for="max_concurrent_jobs">Max concurrent jobs</label>
         <input type="number" id="max_concurrent_jobs" name="max_concurrent_jobs" min="1" max="8" />
+      </div>
+      <div>
+        <label for="max_concurrent_renders">Max concurrent renders</label>
+        <input type="number" id="max_concurrent_renders" name="max_concurrent_renders" min="1" max="8" />
       </div>
       <div>
         <label for="jpeg_quality">JPEG quality</label>
@@ -204,7 +211,7 @@ async function load() {
     for (const k of ['subject_masking', 'sky_masking', 'depth_masking', 'cinematic_presets']) {
       document.getElementById(k).checked = !!s[k];
     }
-    for (const k of ['max_concurrent_jobs', 'jpeg_quality', 'idle_unload_minutes']) {
+    for (const k of ['max_concurrent_jobs', 'max_concurrent_renders', 'jpeg_quality', 'idle_unload_minutes']) {
       document.getElementById(k).value = s[k];
     }
     loadUsers();
