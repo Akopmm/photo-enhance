@@ -28,9 +28,32 @@ def graded(arr: np.ndarray, params: dict) -> np.ndarray:
 
 
 def composite(base: np.ndarray, overlay: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """mask=1 -> overlay, mask=0 -> base."""
+    """mask=1 -> overlay, mask=0 -> base. Allocating form, kept for callers
+    that need `base` preserved; region_grade uses _blend_into instead."""
     m = np.clip(mask, 0, 1)[..., None]
     return np.clip(base * (1 - m) + overlay * m, 0, 1)
+
+
+def _blend_into(base: np.ndarray, layer: np.ndarray, weight) -> None:
+    """base := clip(base + (layer - base) * weight), entirely in place.
+
+    `layer` is consumed as scratch. The obvious expression,
+    `base * (1 - m) + overlay * m`, allocates four full-frame temporaries --
+    ~1.15GB at 24MP for a single composite, which was the single largest
+    contributor to peak RSS on the download path. This allocates none.
+
+    `weight` is either a scalar (whole-frame layer scaled by strength) or an
+    (H, W) mask.
+    """
+    np.subtract(layer, base, out=layer)
+    if np.isscalar(weight):
+        if weight != 1.0:
+            layer *= weight
+    else:
+        w = np.clip(weight, 0, 1)
+        layer *= w[..., None] if w.ndim == 2 else w
+    base += layer
+    np.clip(base, 0, 1, out=base)
 
 
 def region_grade(arr: np.ndarray, regions: list, strength: float = 1.0) -> np.ndarray:
@@ -49,17 +72,22 @@ def region_grade(arr: np.ndarray, regions: list, strength: float = 1.0) -> np.nd
     scaling only the subject mask would leave the background fully
     black & white however far the control was pulled back.
     """
-    out = arr
     s = float(np.clip(strength, 0.0, 1.0))
-    if s <= 0:
+    if s <= 0 or not regions:
         return arr
+
+    # `out` is our own buffer, allocated on first write, so the caller's
+    # array is never mutated and a no-op recipe costs nothing.
+    out = None
     for mask, params in regions:
         layer = graded(arr, params) if params else arr
-        if mask is None:
-            out = layer if s >= 1.0 else np.clip(out * (1 - s) + layer * s, 0, 1)
-        else:
-            out = composite(out, layer, mask if s >= 1.0 else mask * s)
-    return out
+        if layer is arr:
+            layer = arr.copy()          # _blend_into consumes its layer
+        if out is None:
+            out = arr.copy()
+        _blend_into(out, layer, s if mask is None else (mask if s >= 1.0 else mask * s))
+        layer = None
+    return arr if out is None else out
 
 
 # ---------------------------------------------------------------- recipes
