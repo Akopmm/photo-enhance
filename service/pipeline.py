@@ -122,12 +122,95 @@ def _style_list() -> list:
 
 # ------------------------------------------------------------ enhanced mode
 
-def _region_recipes(masks: dict) -> list:
+# Long edge at which masks are computed and stored. Mirrors
+# masking.MASK_RESOLUTION, duplicated only so classic mode never has to
+# import masking (and therefore transformers) just to read a constant.
+MASK_SRC_EDGE = 1024
+
+MASK_NAMES = ("subject", "sky", "depth", "foliage")
+
+# Feather radius per mask, as a FRACTION OF THE LONG EDGE. These were pixel
+# constants shared between the 480px preview and the 6000px render, which
+# made the downloaded edges ~12.5x harder than the ones actually approved in
+# the gallery -- the exact artefact feather() exists to prevent.
+_FEATHER = {"subject": 0.004, "sky": 0.014, "foliage": 0.010}
+
+# Depth grading does nothing on a flat scene, so the depth looks are offered
+# only when the depth map actually spans a range.
+MIN_DEPTH_SPREAD = 0.25
+
+# Depth bands, as percentages of the frame: the nearest 30% and the farthest
+# 40% of pixels, leaving an ungraded middle so the transition reads as depth
+# rather than as two flat layers.
+NEAR_BAND_PCT = 30
+FAR_BAND_PCT = 40
+
+# Aerial perspective is an outdoor phenomenon -- hazing the "far" field of an
+# indoor scene just looks like a lifted black point. Offered only when the
+# frame actually contains open-air content.
+_OUTDOOR_CLASSES = ("sky", "mountain", "tree", "grass", "water", "sea", "building")
+
+
+def _tensor_to_pil(t: torch.Tensor, long_edge: int | None = None) -> Image.Image:
+    if long_edge:
+        t = _resize_tensor(t, long_edge)
+    arr = (t.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+    return Image.fromarray(arr, "RGB")
+
+
+def _save_masks(import_id: str, masks: dict):
+    import masking
+    for name, m in masks.items():
+        storage.save_mask(import_id, name, masking.encode(m))
+
+
+def _load_masks(import_id: str) -> dict:
+    import masking
+    out = {}
+    for name in MASK_NAMES:
+        data = storage.load_mask(import_id, name)
+        if data is not None:
+            out[name] = masking.decode(data)
+    return out
+
+
+def _prepare_masks(stored: dict, size: tuple[int, int]) -> dict:
+    """Resample stored masks to (w, h) and feather relative to THAT size.
+
+    Storing raw alpha and feathering per-target is what keeps the preview and
+    the full render visually identical -- the mask itself is resolution
+    independent, only its softening is not.
+    """
+    import masking
+    out = {}
+    for key, mask in stored.items():
+        m = masking.resample(mask, size)
+        if key == "depth":
+            # Bands are PERCENTILES of this photo's own depth distribution,
+            # not fixed thresholds. Fixed cuts collapse on scenes that aren't
+            # evenly distributed in depth -- on a bird against distant
+            # foliage they put 95% of the frame in "far", which turns a
+            # depth grade into a global one. Percentiles keep both bands
+            # meaningful whatever the scene.
+            # Percentiles come from the STORED map, not the resampled one,
+            # so every output size cuts the bands at exactly the same depth.
+            near_edge = float(np.percentile(mask, 100 - NEAR_BAND_PCT))
+            far_edge = float(np.percentile(mask, FAR_BAND_PCT))
+            out["near"] = masking.depth_band(m, near_edge, 1.0)
+            out["far"] = masking.depth_band(m, 0.0, far_edge)
+        else:
+            out[key] = masking.refine(m, feather_frac=_FEATHER.get(key, 0.006))
+    return out
+
+
+def _region_recipes(masks: dict, scene: dict | None = None) -> list:
     """Which region-aware looks are available given the masks we actually
     got. Each entry is (key, label, [(mask, params), ...])."""
     out = []
     subject = masks.get("subject")
     sky = masks.get("sky")
+    near, far = masks.get("near"), masks.get("far")
+    foliage = masks.get("foliage")
 
     if subject is not None:
         r = rg.SELECTIVE_COLOR
@@ -140,34 +223,83 @@ def _region_recipes(masks: dict) -> list:
         r = rg.SKY_DRAMA
         out.append(("sky_drama", "Sky Drama",
                     [(None, r["ground"]), (sky, r["sky"])]))
+    if near is not None and far is not None:
+        r = rg.DEPTH_POP
+        out.append(("depth_pop", "Depth Pop",
+                    [(far, r["far"]), (near, r["near"])]))
+        outdoor = sum((scene or {}).get(k, 0) for k in _OUTDOOR_CLASSES)
+        if outdoor >= 0.15:
+            r = rg.DEPTH_HAZE
+            out.append(("depth_haze", "Aerial Depth",
+                        [(near, r["near"]), (far, r["far"])]))
+    if foliage is not None:
+        r = rg.FOLIAGE_LIFT
+        out.append(("foliage_lift", "Foliage",
+                    [(None, r["base"]), (foliage, r["foliage"])]))
     return out
 
 
-def _compute_masks_sync(small_img: Image.Image) -> dict:
-    """Runs on a worker thread. Masks are computed on the small preview --
-    these models downsample internally anyway, so full resolution buys
-    nothing but time."""
+def _compute_masks_sync(img: Image.Image) -> tuple[dict, dict]:
+    """Runs on a worker thread. Returns (masks, scene).
+
+    Masks come back as raw soft alpha at masking.MASK_RESOLUTION and
+    UNFEATHERED -- they are persisted in that form and softened per-target by
+    _prepare_masks, so one computation serves every output size.
+    """
+    import numpy as _np
+
     import masking
-    out = {}
+    masks, scene = {}, {}
     try:
         if settings.get("subject_masking"):
-            m = masking.subject_mask(small_img)
-            # Only offer subject recipes when something was actually found.
-            # A near-empty or near-full mask means the model didn't isolate
-            # anything, and grading through it would look like a bug.
-            cov = float((m > 0.5).mean())
-            if 0.01 < cov < 0.95:
-                out["subject"] = masking.refine(m, threshold=0.5, feather_px=2.5)
+            m = masking.subject_mask(img)
+            # is_usable() weighs confidence as well as area. The previous
+            # check was area-only with a 1% floor, which rejected exactly the
+            # photos these looks are for -- a bird on a wire covers 0.9% of
+            # the frame and was silently getting no subject recipes at all.
+            if masking.is_usable(m):
+                masks["subject"] = m
         if settings.get("sky_masking"):
-            m = masking.class_mask(small_img, "sky")
-            cov = float((m > 0.5).mean())
-            if 0.02 < cov < 0.98:
-                out["sky"] = masking.refine(m, threshold=0.5, feather_px=8)
+            # scene_classes() was implemented and never called, so recipe
+            # selection was blind to what was actually in the frame. The
+            # SegFormer pass happens anyway for the sky mask, so this is free.
+            scene = masking.scene_classes(img)
+            if scene.get("sky", 0) >= 0.02:
+                m = masking.class_mask(img, "sky")
+                if masking.is_usable(m, min_coverage=0.02, min_confidence=0.5):
+                    masks["sky"] = m
+            greenery = sum(scene.get(k, 0) for k in ("tree", "grass", "plant"))
+            if greenery >= 0.12:
+                m = masking.class_mask_any(img, ("tree", "grass", "plant"))
+                if masking.is_usable(m, min_coverage=0.05, min_confidence=0.5):
+                    masks["foliage"] = m
+        if settings.get("depth_masking"):
+            d = masking.depth_map(img)
+            spread = float(_np.percentile(d, 90) - _np.percentile(d, 10))
+            if spread >= MIN_DEPTH_SPREAD:
+                masks["depth"] = d
     except Exception as e:  # noqa: BLE001
         # Segmentation is an enhancement, not a requirement -- if it fails,
         # the import should still produce its normal global-LUT styles.
         logger.warning("masking failed, continuing without regions: %s", e)
-    return out
+    return masks, scene
+
+
+async def _masks_for(import_id: str, baseline: torch.Tensor) -> tuple[dict, dict]:
+    """Stored masks for an import, computing and persisting them if absent.
+
+    The absent case covers imports made before masks were persisted; without
+    it those would silently lose their region styles.
+    """
+    stored = await asyncio.to_thread(_load_masks, import_id)
+    if stored:
+        meta = storage.get_import(import_id) or {}
+        return stored, meta.get("scene", {})
+    mask_pil = await asyncio.to_thread(_tensor_to_pil, baseline, MASK_SRC_EDGE)
+    async with _mask_gate:
+        stored, scene = await asyncio.to_thread(_compute_masks_sync, mask_pil)
+    await asyncio.to_thread(_save_masks, import_id, stored)
+    return stored, scene
 
 
 # ------------------------------------------------------------ entry points
@@ -201,19 +333,28 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
 
         # Region-aware styles (enhanced mode only)
         if settings.get("mode") == "enhanced":
-            small_pil = Image.fromarray(
-                (small_baseline.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy() * 255).astype(np.uint8))
+            # Masks are computed once, at MASK_SRC_EDGE, and persisted. The
+            # full-resolution render reuses these exact masks rather than
+            # segmenting again, so the download grades through what the
+            # gallery was judged on.
+            mask_pil = await asyncio.to_thread(_tensor_to_pil, baseline, MASK_SRC_EDGE)
             async with _mask_gate:
-                masks = await asyncio.to_thread(_compute_masks_sync, small_pil)
+                stored_masks, scene = await asyncio.to_thread(_compute_masks_sync, mask_pil)
+            await asyncio.to_thread(_save_masks, import_id, stored_masks)
+
             base_small = small_baseline.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
-            for key, label, regions in _region_recipes(masks):
+            h, w = base_small.shape[:2]
+            masks = _prepare_masks(stored_masks, (w, h))
+            recipes = _region_recipes(masks, scene)
+            await asyncio.to_thread(storage.save_scene, import_id, scene,
+                                    [k for k, _l, _r in recipes])
+            for key, label, regions in recipes:
                 out = await asyncio.to_thread(rg.region_grade, base_small, regions)
                 b = await asyncio.to_thread(_array_to_jpeg_bytes, out, THUMB_QUALITY)
                 await asyncio.to_thread(storage.save_preview, import_id, key, label, b)
 
             # Composition suggestions ride along on the subject mask we just
             # computed, so they cost essentially nothing extra.
-            h, w = base_small.shape[:2]
             crops = await asyncio.to_thread(
                 cropping.suggest_crops, w, h, masks.get("subject"))
             await asyncio.to_thread(storage.save_crops, import_id, crops, w, h)
@@ -241,10 +382,19 @@ async def _get_original_bytes(import_id: str) -> tuple[bytes, str]:
     return data, meta["source_name"] or name
 
 
-async def render_full_style(import_id: str, style_key: str, crop_key: str | None = None) -> str:
+async def render_full_style(import_id: str, style_key: str, crop_key: str | None = None,
+                            strength: float = 1.0) -> str:
     """Full-resolution render of one style, on first request, then cached.
-    `crop_key` optionally applies one of the stored composition suggestions."""
+
+    `crop_key` optionally applies one of the stored composition suggestions.
+    `strength` (region recipes only) dials the effect back toward the
+    ungraded image; it is part of the cache key, so each setting is rendered
+    once and then reused.
+    """
+    strength = min(max(float(strength), 0.0), 1.0)
     cache_key = style_key if not crop_key else f"{style_key}__{crop_key}"
+    if strength < 1.0:
+        cache_key = f"{cache_key}__s{round(strength * 100):03d}"
     if storage.full_render_exists(import_id, cache_key):
         return storage.full_render_path(import_id, cache_key)
 
@@ -263,15 +413,20 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
             styled = await runtime.render_style(baseline, global_styles[style_key])
             jpeg = await asyncio.to_thread(_tensor_to_jpeg_bytes, styled, _jpeg_quality())
         else:
-            # Region recipe: masks must be recomputed at this resolution.
+            # Region recipe. The masks are NOT recomputed here: they are
+            # loaded and resampled, which is both cheaper and the only way
+            # the download can match the preview. Recomputing at native
+            # resolution used to shift coverage (measured 0.2120 -> 0.1873
+            # sky on one photo) and could even drop a style entirely, 500ing
+            # on something the gallery was still offering.
             base_arr = baseline.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
-            pil = Image.fromarray((base_arr * 255).astype(np.uint8))
-            async with _mask_gate:
-                masks = await asyncio.to_thread(_compute_masks_sync, pil)
-            recipe = next((r for k, _l, r in _region_recipes(masks) if k == style_key), None)
+            h, w = base_arr.shape[:2]
+            stored_masks, scene = await _masks_for(import_id, baseline)
+            masks = _prepare_masks(stored_masks, (w, h))
+            recipe = next((r for k, _l, r in _region_recipes(masks, scene) if k == style_key), None)
             if recipe is None:
                 raise KeyError(f"unknown or unavailable style {style_key!r}")
-            out = await asyncio.to_thread(rg.region_grade, base_arr, recipe)
+            out = await asyncio.to_thread(rg.region_grade, base_arr, recipe, strength)
             jpeg = await asyncio.to_thread(_array_to_jpeg_bytes, out, _jpeg_quality())
 
         if crop_key:
