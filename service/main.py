@@ -24,6 +24,14 @@ PUBLIC_PREFIXES = ("/static/",)
 @app.on_event("startup")
 async def startup():
     auth.bootstrap_from_env()
+    # Upgrading a pre-multi-user instance: imports written before ownership
+    # existed match no user, so the gallery would look empty even though
+    # every file is intact. Hand them to the first admin.
+    admins = [u["username"] for u in auth.list_users() if u["is_admin"]]
+    if admins:
+        n = storage.claim_unowned(admins[0])
+        if n:
+            logger.info("claimed %d pre-existing import(s) for admin %s", n, admins[0])
     runtime.start_watchdog()
 
 
@@ -279,6 +287,12 @@ async def gallery_get(import_id: str, user: str = Depends(current_user)):
 async def gallery_original_thumb(import_id: str, user: str = Depends(current_user)):
     _owned(import_id, user)
     return FileResponse(storage.original_thumb_path(import_id), media_type="image/jpeg")
+
+
+@app.get("/api/gallery/{import_id}/crop_{crop_key}_thumb.jpg")
+async def gallery_crop_thumb(import_id: str, crop_key: str, user: str = Depends(current_user)):
+    _owned(import_id, user)
+    return FileResponse(storage.crop_thumb_path(import_id, crop_key), media_type="image/jpeg")
 
 
 @app.get("/api/gallery/{import_id}/{style_key}_thumb.jpg")

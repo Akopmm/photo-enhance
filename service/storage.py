@@ -134,6 +134,15 @@ def list_imports(owner: str | None = None) -> list[dict]:
     return items
 
 
+def save_crop_thumb(import_id: str, crop_key: str, jpeg_bytes: bytes):
+    with open(os.path.join(_import_dir(import_id), f"crop_{crop_key}_thumb.jpg"), "wb") as f:
+        f.write(jpeg_bytes)
+
+
+def crop_thumb_path(import_id: str, crop_key: str) -> str:
+    return os.path.join(_import_dir(import_id), f"crop_{crop_key}_thumb.jpg")
+
+
 def save_crops(import_id: str, crops: list, ref_w: int, ref_h: int):
     """Crop suggestions are computed against the preview, so the reference
     dimensions travel with them -- callers scale to whatever resolution they
@@ -149,6 +158,26 @@ def save_crops(import_id: str, crops: list, ref_w: int, ref_h: int):
 def owns(import_id: str, username: str) -> bool:
     meta = _read_meta(import_id)
     return bool(meta) and meta.get("owner", "") == username
+
+
+def claim_unowned(username: str) -> int:
+    """Assign imports that predate multi-user support to `username`.
+
+    Galleries are filtered by owner, so without this, upgrading an existing
+    single-user instance would make every previously-imported photo silently
+    disappear -- the files are still there, they just match nobody. Runs once
+    at startup for the first admin. Returns how many were claimed.
+    """
+    if not os.path.isdir(ROOT) or not username:
+        return 0
+    claimed = 0
+    for name in os.listdir(ROOT):
+        meta = _read_meta(name)
+        if meta and not meta.get("owner"):
+            meta["owner"] = username
+            _write_meta(name, meta)
+            claimed += 1
+    return claimed
 
 
 def delete_import(import_id: str):

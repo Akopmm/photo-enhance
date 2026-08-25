@@ -218,6 +218,15 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
                 cropping.suggest_crops, w, h, masks.get("subject"))
             await asyncio.to_thread(storage.save_crops, import_id, crops, w, h)
 
+            # Render a small preview per crop so the picker shows the actual
+            # framing. Without this the user selects a crop and nothing on
+            # screen changes, so there's no way to judge it before
+            # downloading. Cheap: these are crops of an already-small image.
+            for c in crops:
+                thumb = cropping.apply_crop(base_small, c)
+                b = await asyncio.to_thread(_array_to_jpeg_bytes, thumb, THUMB_QUALITY)
+                await asyncio.to_thread(storage.save_crop_thumb, import_id, c["key"], b)
+
     logger.info("preview: %s -> %s (user=%s, mode=%s)", filename, import_id,
                 username, settings.get("mode"))
     return import_id

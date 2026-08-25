@@ -8,11 +8,16 @@ The rules applied are the ordinary ones a photographer would use by hand:
 
   * put the subject's centre of mass on a rule-of-thirds intersection
     rather than dead centre
-  * never cut the subject -- a crop that clips it is rejected outright
+  * prefer keeping the subject whole, but allow a tighter crop that clips
+    it a little (reported as subject_coverage, and ranked below intact
+    ones) -- rejecting every clipping crop meant a subject spanning the
+    frame produced no suggestions at all
   * leave "looking room": if the subject sits left of centre, bias the crop
     to leave space on its right, and vice versa
   * offer a few standard aspect ratios, since the best crop depends on
     where the photo is going (print, phone, social, cinematic)
+  * don't offer a crop that keeps ~the whole frame, or one that throws away
+    most of the subject
 
 Deliberately NOT a learned aesthetic model. A saliency/aesthetics network
 would be another ~100MB and several seconds per photo, and for the common
@@ -35,6 +40,11 @@ ASPECTS = [
 
 THIRDS = (1 / 3, 2 / 3)
 
+# A crop keeping >= this much of the frame isn't worth offering.
+NO_OP_THRESHOLD = 0.95
+# Below this much of the subject retained, the crop is destroying the photo.
+MIN_SUBJECT_COVERAGE = 0.60
+
 
 def subject_box(mask: np.ndarray, threshold: float = 0.5):
     """Tight bounding box of the masked subject as (x0, y0, x1, y1), or None."""
@@ -56,10 +66,23 @@ def subject_centroid(mask: np.ndarray):
     return float((xs * mask).sum() / total / w), float((ys * mask).sum() / total / h)
 
 
+def _subject_coverage(crop: dict, subject: tuple | None) -> float:
+    """Fraction of the subject's bounding box still inside the crop."""
+    if subject is None:
+        return 1.0
+    sx0, sy0, sx1, sy1 = subject
+    ix0, iy0 = max(sx0, crop["x"]), max(sy0, crop["y"])
+    ix1, iy1 = min(sx1, crop["x"] + crop["w"]), min(sy1, crop["y"] + crop["h"])
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0
+    area = (sx1 - sx0) * (sy1 - sy0)
+    return ((ix1 - ix0) * (iy1 - iy0)) / area if area else 1.0
+
+
 def _crop_for_aspect(img_w: int, img_h: int, aspect: float, cx: float, cy: float,
                      subject: tuple | None):
-    """Largest crop of the given aspect that contains the subject and puts
-    (cx, cy) as close as possible to the nearest rule-of-thirds intersection."""
+    """Largest crop of the given aspect, positioned to keep as much of the
+    subject as possible while putting (cx, cy) near a rule-of-thirds point."""
     # Largest box of this aspect that fits inside the frame.
     if img_w / img_h > aspect:
         ch = img_h
@@ -84,19 +107,27 @@ def _crop_for_aspect(img_w: int, img_h: int, aspect: float, cx: float, cy: float
 
     if subject is not None:
         sx0, sy0, sx1, sy1 = subject
-        # Subject bigger than the crop in either axis -> this aspect can't
-        # hold it without clipping; skip rather than return a bad crop.
-        if (sx1 - sx0) > cw or (sy1 - sy0) > ch:
-            return None
-        # Slide the window minimally so the subject is fully inside.
-        if sx0 < x0:
-            x0 = sx0
-        elif sx1 > x0 + cw:
-            x0 = sx1 - cw
-        if sy0 < y0:
-            y0 = sy0
-        elif sy1 > y0 + ch:
-            y0 = sy1 - ch
+        # If the subject fits, slide the window minimally so it's fully
+        # inside. If it does NOT fit, centre the window on the subject
+        # instead of rejecting the aspect outright -- a slightly clipped
+        # subject is a normal, useful crop (an earlier version rejected
+        # these, which meant a subject spanning the frame produced no
+        # suggestions at all). How much survives is reported as
+        # subject_coverage so callers can rank and warn.
+        if (sx1 - sx0) <= cw:
+            if sx0 < x0:
+                x0 = sx0
+            elif sx1 > x0 + cw:
+                x0 = sx1 - cw
+        else:
+            x0 = int(round((sx0 + sx1) / 2 - cw / 2))
+        if (sy1 - sy0) <= ch:
+            if sy0 < y0:
+                y0 = sy0
+            elif sy1 > y0 + ch:
+                y0 = sy1 - ch
+        else:
+            y0 = int(round((sy0 + sy1) / 2 - ch / 2))
         x0 = max(0, min(x0, img_w - cw))
         y0 = max(0, min(y0, img_h - ch))
 
@@ -132,34 +163,50 @@ def suggest_crops(img_w: int, img_h: int, mask: np.ndarray | None):
         crop = _crop_for_aspect(img_w, img_h, aspect, cx, cy, box)
         if crop is None:
             continue
-        # Skip crops that barely change anything -- suggesting a "crop" that
-        # removes 2% of the frame is noise, not a suggestion.
+
         area_ratio = (crop["w"] * crop["h"]) / (img_w * img_h)
+        # A "crop" that keeps essentially the whole frame is noise, not a
+        # suggestion -- it just clutters the picker with a no-op.
+        if area_ratio >= NO_OP_THRESHOLD:
+            continue
+        coverage = _subject_coverage(crop, box)
+        # Cutting away most of the subject is never the intent.
+        if has_subject and coverage < MIN_SUBJECT_COVERAGE:
+            continue
+
+        if not has_subject:
+            why = "No distinct subject detected — centred crop."
+        elif coverage >= 0.999:
+            why = (f"Subject kept whole, placed near the "
+                   f"{'left' if cx < 0.5 else 'right'}/"
+                   f"{'upper' if cy < 0.5 else 'lower'} thirds point.")
+        else:
+            why = f"Tighter framing — keeps {round(coverage * 100)}% of the subject."
+
         crop.update({
             "key": key,
             "label": label,
             "has_subject": has_subject,
             "kept_fraction": round(area_ratio, 3),
-            "rationale": (
-                f"Subject placed near the rule-of-thirds point ({'left' if cx < 0.5 else 'right'}, "
-                f"{'upper' if cy < 0.5 else 'lower'})."
-                if has_subject else
-                "No distinct subject detected — centred crop."
-            ),
+            "subject_coverage": round(coverage, 3),
+            "rationale": why,
         })
         out.append(crop)
 
-    # Widest deviation from the original aspect last; the closest ratio to
-    # the source is usually the safest suggestion, so lead with it.
+    # Lead with crops that keep the subject intact; among those, prefer the
+    # ratio closest to the source (least surprising).
     src = img_w / img_h
-    out.sort(key=lambda c: abs((c["w"] / c["h"]) - src))
+    out.sort(key=lambda c: (-round(c["subject_coverage"], 2), abs((c["w"] / c["h"]) - src)))
     return out
 
 
 def apply_crop(arr: np.ndarray, crop: dict) -> np.ndarray:
     h, w = arr.shape[:2]
-    sx = w / crop.get("ref_w", w)
-    sy = h / crop.get("ref_h", h)
+    # `or w` guards the key being present but None (an import saved without
+    # crop_ref) -- plain .get(key, default) returns None in that case, and
+    # dividing by it raises.
+    sx = w / (crop.get("ref_w") or w)
+    sy = h / (crop.get("ref_h") or h)
     x0 = max(0, int(round(crop["x"] * sx)))
     y0 = max(0, int(round(crop["y"] * sy)))
     x1 = min(w, x0 + int(round(crop["w"] * sx)))

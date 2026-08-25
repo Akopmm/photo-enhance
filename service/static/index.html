@@ -28,10 +28,14 @@
   .styles-grid button.dl-style.busy img { opacity: 0.4; }
   .styles-grid button.dl-style.busy::after { content: "rendering…"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 0.68rem; background: #0006; border-radius: 6px; }
   .row { display: flex; justify-content: space-between; align-items: center; }
-  .crop-row { display: flex; flex-wrap: wrap; gap: 0.3rem; }
-  .crop-pill { font-size: 0.72rem; padding: 0.25rem 0.55rem; border-radius: 999px;
-               border: 1px solid #8886; background: none; color: inherit; cursor: pointer; }
-  .crop-pill.active { background: #7c7cf5; color: white; border-color: #7c7cf5; }
+  .crop-row { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+  .crop-opt { display: flex; flex-direction: column; align-items: center; gap: 0.15rem;
+              width: 92px; padding: 0.3rem; border-radius: 8px; cursor: pointer;
+              border: 1px solid #8886; background: none; color: inherit; font: inherit; }
+  .crop-opt img { width: 100%; height: 62px; object-fit: contain; border-radius: 4px; background: #8881; }
+  .crop-opt span { font-size: 0.7rem; }
+  .crop-opt em { font-size: 0.62rem; opacity: 0.6; font-style: normal; }
+  .crop-opt.active { border-color: #7c7cf5; box-shadow: 0 0 0 1px #7c7cf5; }
   button.small { font-size: 0.8rem; padding: 0.3rem 0.6rem; border-radius: 6px; border: 1px solid #8886; background: none; cursor: pointer; }
   #status { font-size: 0.85rem; opacity: 0.7; margin-bottom: 0.5rem; min-height: 1.2em; }
 </style>
@@ -213,8 +217,18 @@ async function loadGallery() {
           Suggested crops <span style="opacity:0.6">— pick a style below, then a crop</span>
         </div>
         <div class="crop-row">
-          <button class="crop-pill active" data-crop="">Full frame</button>
-          ${imp.crops.map(c => `<button class="crop-pill" data-crop="${c.key}" title="${c.rationale}">${c.label}</button>`).join('')}
+          <button class="crop-opt active" data-crop="">
+            <img src="/api/gallery/${imp.id}/original_thumb.jpg" loading="lazy" />
+            <span>Full frame</span>
+          </button>
+          ${imp.crops.map(c => `
+          <button class="crop-opt" data-crop="${c.key}" title="${c.rationale}">
+            <img src="/api/gallery/${imp.id}/crop_${c.key}_thumb.jpg" loading="lazy" />
+            <span>${c.label}</span>
+            <em>${c.subject_coverage !== undefined && c.subject_coverage < 0.999
+                  ? Math.round(c.subject_coverage*100) + '% of subject'
+                  : Math.round(c.kept_fraction*100) + '% of frame'}</em>
+          </button>`).join('')}
         </div>
       </div>` : ''}
       <div class="styles-grid">
@@ -238,13 +252,14 @@ async function loadGallery() {
     card.querySelectorAll('.dl-style').forEach(btn => {
       btn.addEventListener('click', () => downloadFullRes(btn, card.dataset.crop || ''));
     });
-    card.querySelectorAll('.crop-pill').forEach(pill => {
+    card.querySelectorAll('.crop-opt').forEach(pill => {
       pill.addEventListener('click', () => {
-        card.querySelectorAll('.crop-pill').forEach(p => p.classList.remove('active'));
+        card.querySelectorAll('.crop-opt').forEach(p => p.classList.remove('active'));
         pill.classList.add('active');
         card.dataset.crop = pill.dataset.crop;
+        const name = pill.querySelector('span') ? pill.querySelector('span').textContent : 'crop';
         setStatus(pill.dataset.crop
-          ? `Crop "${pill.textContent}" selected — downloads will be cropped.`
+          ? `Crop "${name}" selected — downloads from this photo will use it.`
           : 'Full frame selected.');
       });
     });
