@@ -258,18 +258,18 @@ async function downloadFullRes(btn, cropKey) {
   btn.classList.add('busy');
   setStatus('Rendering full resolution… (first time only, ~10-20s)');
   try {
-    const url = `/api/gallery/${importId}/${style}.jpg` + (cropKey ? `?crop=${cropKey}` : '');
-    const res = await fetch(url);
+    const reqUrl = `/api/gallery/${importId}/${style}.jpg` + (cropKey ? `?crop=${cropKey}` : '');
+    const res = await fetch(reqUrl);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
+    const objUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
+    a.href = objUrl;
     a.download = `${name}_${style}${cropKey ? '_' + cropKey : ''}.jpg`;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(objUrl);
     setStatus('Downloaded.');
   } catch (e) {
     setStatus('Full-resolution render failed: ' + e, true);
