@@ -34,6 +34,30 @@
   td, th { text-align: left; padding: 0.4rem 0.3rem; border-bottom: 1px solid #8882; }
   .admin-only { display: none; }
   .pill { font-size: 0.7rem; border: 1px solid #8886; border-radius: 999px; padding: 0.1rem 0.5rem; opacity: 0.8; }
+
+  /* --- mobile / a11y pass (measured at 390px, 2026-08-25) --- */
+  /* 16px is the threshold below which iOS Safari zooms the page when an
+     input takes focus, which reads as the layout breaking. */
+  input, select, textarea { font-size: 16px; }
+  /* Comfortable touch targets. Measured buttons were 33-35px and the
+     "Gallery" link only 19px tall. */
+  button, .crop-opt { min-height: 40px; }
+  a.navlink { display: inline-block; padding: 0.55rem 0.25rem; }
+  /* Nothing defined a focus style at all, so keyboard users were relying on
+     whatever the UA happened to draw. */
+  a:focus-visible, button:focus-visible, input:focus-visible,
+  select:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid #7c7cf5; outline-offset: 2px; border-radius: 4px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+  /* Side-by-side form fields squeeze to ~100px on a phone and their labels
+     wrap onto two lines; stack them instead. */
+  @media (max-width: 560px) {
+    .row { flex-direction: column; gap: 0; }
+    .row > div { width: 100%; }
+  }
 </style>
 </head>
 <body>
@@ -41,7 +65,7 @@
 <header>
   <h1>Settings</h1>
   <div>
-    <a href="/">← Gallery</a>
+    <a href="/" class="navlink">← Gallery</a>
     <button class="ghost" id="logout" style="margin-left:0.5rem;">Sign out</button>
   </div>
 </header>
