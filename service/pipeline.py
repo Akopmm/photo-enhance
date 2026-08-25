@@ -34,7 +34,7 @@ import region_grade as rg
 import settings
 import storage
 from cinematic import CINEMATIC
-from model_runtime import runtime
+from model_runtime import runtime, return_arenas_to_os
 from presets import PRESETS
 
 logger = logging.getLogger("photo-enhance.pipeline")
@@ -428,6 +428,9 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
                 b = await asyncio.to_thread(_array_to_jpeg_bytes, thumb, THUMB_QUALITY)
                 await asyncio.to_thread(storage.save_crop_thumb, import_id, c["key"], b)
 
+    # Hand the freed arenas back before the next job starts, so a burst of
+    # imports doesn't ratchet RSS upward for the whole batch.
+    await asyncio.to_thread(return_arenas_to_os)
     logger.info("preview: %s -> %s (user=%s, mode=%s)", filename, import_id,
                 username, settings.get("mode"))
     return import_id
@@ -504,5 +507,6 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
 
         await asyncio.to_thread(storage.save_full_render, import_id, cache_key, jpeg)
 
+    await asyncio.to_thread(return_arenas_to_os)
     logger.info("full render: %s / %s", import_id, cache_key)
     return storage.full_render_path(import_id, cache_key)

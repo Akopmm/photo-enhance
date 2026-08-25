@@ -34,13 +34,19 @@ IDLE_UNLOAD_MINUTES = float(os.environ.get("IDLE_UNLOAD_MINUTES", "15"))
 INFERENCE_DEVICE = os.environ.get("INFERENCE_DEVICE", "cpu")
 
 
-def _return_arenas_to_os():
+def return_arenas_to_os():
     """gc.collect() frees the objects, but glibc keeps the arenas, so RSS
     barely moves and creeps upward across load/unload cycles (measured
     1643 -> 1870 -> 1991 MB over three enhanced imports). malloc_trim hands
     the free arenas back, which is what actually matters inside a container
     where RSS is the number the host sees. Linux/glibc only -- absent on
     macOS and musl, so failure here is normal and not worth logging loudly.
+
+    Called after every job, not only on idle-unload. Measured on optiplex:
+    RSS climbed ~61MB per import (1005 -> 1615MB over ten) purely as arena
+    fragmentation, and a 15-minute idle timer never fires during a burst --
+    so a 30-photo batch peaked ~1.3GB higher than a 12-photo one at identical
+    concurrency. Trimming per job flattens that.
     """
     try:
         import ctypes
@@ -108,7 +114,7 @@ class ModelRuntime:
 
         if released:
             gc.collect()
-            _return_arenas_to_os()
+            return_arenas_to_os()
             logger.info("models idle-unloaded after %.1f min", IDLE_UNLOAD_MINUTES)
 
     async def _watchdog(self):
