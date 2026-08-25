@@ -1,69 +1,167 @@
 # photo-enhance
 
-A self-hosted Lightroom-style photo enhancement service: point it at a photo (Canon CR3, Sony ARW, or plain JPEG), it predicts a color/exposure correction with a small neural network, then renders 12 distinct style variants (natural, HDR, cinematic teal-orange, B&W, bright & airy, faded retro, and more) on top of that correction. Built to run entirely on a home server's CPU (no GPU required), with a browser UI for importing from an [Immich](https://immich.app) photo library or a direct upload.
+A self-hosted, Lightroom-style photo enhancement service. Point it at a photo — Canon CR3, Sony ARW, or plain JPEG — and it predicts a colour/exposure correction with a small neural network, then renders **18 style variants** on top of it. In *enhanced* mode it also segments the photo so the subject and the sky can be graded separately, and suggests compositional crops.
 
-## Why
+Runs entirely on a home server's CPU. No GPU required, nothing leaves the machine.
 
 Built as a personal alternative to an Adobe Lightroom subscription.
 
+---
+
 ## How it works
 
-- **The model** is a small CNN (~600K parameters) based on the architecture from [*Learning Image-Adaptive 3D Lookup Tables for High Performance Photo Enhancement in Real-time*](https://github.com/HuiZeng/Image-Adaptive-3DLUT) (Zeng et al., Apache-2.0). It looks at a downsampled version of the photo and predicts how to blend a handful of learned 3D color lookup tables into one image-specific correction.
-- **`service/`** ships with that paper's own published pretrained weights (`service/weights/model.pt`, sRGB variant, converted into this repo's state-dict layout — see `training/model.py`... credit: original weights from the authors' repo's `pretrained_models/sRGB/`). The LUT-application step is reimplemented with `torch.nn.functional.grid_sample` instead of the original repo's CUDA-only compiled extension, so the identical model runs on plain CPU, Apple Silicon (MPS), or Intel integrated GPU (OpenVINO) with no GPU-specific build step.
-- **12 style presets** (Natural Light, HDR Punch, Cinematic Teal-Orange, Golden Hour Warm, Moody Matte Film, B&W Dramatic, Clean Commercial, Vibrant Punch, Bright & Airy, Faded Retro, Deep Contrast Noir, Cool Arctic) are a separate, deterministic PyTorch-based grading pipeline (`service/presets.py`) applied on top of the model's corrected baseline — not learned, hand-tuned.
-- **Region-aware grading** (enhanced mode): the LUT model applies one colour mapping to every pixel, so it structurally cannot treat a subject differently from its background. Segmentation supplies the "where" — [BiRefNet-lite](https://github.com/zhengpeng7/birefnet) (44M params, MIT) for subject cutouts and SegFormer-B0/ADE20K for sky — enabling *Selective Colour* (subject in colour, background mono), *Subject Pop* and *Sky Drama*. Masking failures degrade to the ordinary global styles rather than failing the import, and a recipe is skipped when mask coverage looks degenerate (<1% or >95%), since grading through such a mask looks like a bug.
-- **Composition-aware crop suggestions**: built on the same subject mask, so it's arithmetic rather than guesswork — the subject's mass-weighted centroid is placed on the nearest rule-of-thirds intersection. Prefers keeping the subject whole but will offer a tighter crop that clips it, reporting how much survives; no-op crops (keeping ≥95% of the frame) and destructive ones (<60% of the subject) are filtered out. Each suggestion renders its own preview thumbnail so the framing is visible before downloading, and downloads take `?crop=<key>`.
-- **Multi-user with per-user Immich keys**: login is stdlib-only (`hashlib.scrypt` + HMAC-signed cookies — no auth framework for a handful of accounts). Each user holds their own Immich URL and API key so imports read from their own library, galleries are per-user, and every read path checks ownership rather than trusting UUIDs to be unguessable. API keys are never sent to any browser, only a masked preview.
-- **Preview-first rendering**: decode + model inference happen once at full resolution on import (both are cheap regardless of resolution — the weight-predictor CNN always downsamples its input to 256×256 internally, and LUT color correction is a pointwise per-pixel operation, so it costs about the same at any output size). The genuinely expensive part — the deterministic style-preset box-blur effects — only runs at full resolution for a style you actually download, and is cached after that (`pipeline.render_full_style`). Import is a few seconds; a full-res download of one style is a few more seconds the first time, instant after. The gallery also shows the original, uncorrected photo alongside the style renders for comparison.
-- **`training/`** is a from-scratch training pipeline (Mac/MPS) against the MIT-Adobe FiveK dataset, for anyone who wants to train their own model instead of using the shipped pretrained weights. Not needed to run the service.
+### The model
 
-## Running the service
+A small CNN (~600K parameters) based on [*Learning Image-Adaptive 3D Lookup Tables for High Performance Photo Enhancement in Real-time*](https://github.com/HuiZeng/Image-Adaptive-3DLUT) (Zeng et al., Apache-2.0). It looks at a downsampled copy of the photo and predicts how to blend a handful of learned 3D colour lookup tables into one image-specific correction.
 
-```
-cd service
-python3 -m venv .venv && source .venv/bin/activate
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install -r requirements.txt
-cp .env.example .env   # fill in IMMICH_URL / IMMICH_API_KEY if you want Immich import
-uvicorn main:app --host 0.0.0.0 --port 5054
-```
+`service/weights/model.pt` ships **that paper's own published pretrained weights** (sRGB variant, converted into this repo's state-dict layout; originals from the authors' `pretrained_models/sRGB/`). The LUT application is reimplemented with `torch.nn.functional.grid_sample` instead of the original repo's CUDA-only compiled extension, so the identical model runs on plain CPU, Apple Silicon (MPS) or an Intel iGPU (OpenVINO) with no GPU-specific build step.
 
-Or via Docker — build context must be the repo root (not `service/`), since the Dockerfile pulls in `shared/model.py`:
+> If you reimplement this: the LUT axis order is **B, G, R** across the tensor's first three spatial axes (R varies along the *last*). Getting it backwards still trains fine — it's self-consistent — but the published weights then produce garbage. Verified against the original repo's own `IdentityLUT33.txt`.
 
-```
-docker build -f service/Dockerfile -t photo-enhance .
-docker run -p 5054:5054 --env-file service/.env photo-enhance
-```
+### Styles (both modes)
 
-CI (`.github/workflows/build.yml`) builds and publishes this image to `ghcr.io/akopmm/photo-enhance:latest` on every push to `main` — deploy hosts can just `docker pull` that instead of building locally.
+18 deterministic looks in `service/presets.py` and `service/cinematic.py`, applied on top of the model's corrected baseline. Hand-tuned parameters, not learned:
 
-Set `INFERENCE_DEVICE=openvino_gpu` (with `/dev/dri` passed through) to route inference through an Intel integrated GPU instead of CPU — see `service/model_runtime.py`. Measured on a 6-core i5-10500T this was *no faster* than plain CPU for the global-LUT path, because each style preset is a separate small dispatch; segmentation is a much better fit for that hardware if you want to revisit it.
+**Core (12)** — Natural Light+, HDR Punch, Cinematic Teal-Orange, Golden Hour Warm, Moody Matte Film, B&W Dramatic, Clean Commercial, Vibrant Punch, Bright & Airy, Faded Retro, Deep Contrast Noir, Cool Arctic.
 
-On first run the instance has no users: `PHOTO_ENHANCE_ADMIN_USER` / `PHOTO_ENHANCE_ADMIN_PASSWORD` bootstrap the first admin, or the login page offers a one-time "create admin" form. Everything else — mode, masking toggles, concurrency, quality, users and their Immich keys — is editable at `/settings` and persisted under the render volume (`data/renders/_config`), so it survives image updates.
+**Cinematic pack (6)** — Teal & Orange, Bleach Bypass, Midnight Blue, Warm Film, Cold Thriller, Golden Epic. What reads as "cinematic" is a small set of ingredients: a filmic curve (lifted blacks, rolled highlights), split toning, restrained saturation, halation and grain. No model involved; toggleable in settings.
 
-### Modes
+### Region-aware grading (enhanced mode)
+
+The LUT model applies **one** colour mapping to every pixel, so it structurally cannot treat a subject differently from its background. Segmentation supplies the *where*:
+
+| Mask | Model | Notes |
+|---|---|---|
+| Subject | [BiRefNet-lite](https://github.com/zhengpeng7/birefnet), 44M params, MIT | Crisp cutouts; the "Select Subject" equivalent |
+| Sky | SegFormer-B0 / ADE20K | Coarse but fine for sky, which is graded softly anyway |
+
+Recipes: **Selective Colour** (subject in colour, background mono), **Subject Pop**, **Sky Drama**.
+
+Masking failures degrade to the ordinary global styles rather than failing the import. A recipe is skipped when mask coverage is degenerate (<1% or >95%) — grading through such a mask looks like a bug rather than a style.
+
+### Crop suggestions (enhanced mode)
+
+Built on the same subject mask, so it's arithmetic rather than guesswork: the subject's mass-weighted centroid is placed on the nearest rule-of-thirds intersection, across 1:1 / 4:5 / 3:2 / 16:9 / 2.39:1.
+
+- Prefers keeping the subject whole; will offer a tighter crop that clips it, reporting `subject_coverage`, with intact crops ranked first.
+- Filters out no-op crops (≥95% of the frame kept) and destructive ones (<60% of the subject).
+- Each suggestion renders its own preview thumbnail, so the framing is visible before downloading. Downloads take `?crop=<key>`.
+
+Deliberately rules, not a learned aesthetics model — that would be another ~100MB and seconds per photo to land in roughly the same place for the common single-subject case. With no clear subject it falls back to a centred crop and says so.
+
+### Preview-first rendering
+
+Decode and model inference run once at full resolution on import — both are cheap at any size, since the weight-predictor CNN downsamples to 256×256 internally and the LUT is a pointwise op. The genuinely expensive part (the box-blur-based preset effects) only runs at full resolution for a style you actually **download**, and is cached afterwards.
+
+Import is a few seconds; the first full-res download of a style takes a few more, then it's instant. The gallery also shows the original, uncorrected photo for comparison.
+
+### Users
+
+Login is stdlib-only — `hashlib.scrypt` for passwords, HMAC-signed session cookies. No auth framework for what is a handful of accounts on a private network.
+
+Each user holds **their own** Immich URL and API key, so imports read from their own library. Galleries are per-user and every read path checks ownership rather than trusting UUIDs to be unguessable. API keys are never sent to any browser — only a masked preview — and submitting an empty key means "leave unchanged".
+
+---
+
+## Modes
 
 | | classic | enhanced |
 |---|---|---|
-| Global colour correction + style presets | yes | yes |
-| Subject / sky region grading | no | yes |
-| Crop suggestions | no | yes |
+| Colour correction + 18 style presets | ✓ | ✓ |
+| Subject / sky region grading | — | ✓ |
+| Crop suggestions | — | ✓ |
 | Extra RAM while processing | none | ~1.2 GB |
-| Time per photo (i5-10500T) | ~5 s | ~17 s |
+| Time per photo (6-core i5-10500T) | ~5 s | ~17 s |
+
+Switch in **Settings**. Defaults to `classic`.
+
+---
+
+## Running it
+
+### Docker (recommended)
+
+CI publishes `ghcr.io/akopmm/photo-enhance:latest` on every push to `main`, with the segmentation weights **baked in** — no cold-start download, no dependency on Hugging Face being reachable.
+
+```bash
+docker run -d --name photo-enhance -p 5054:5054 \
+  -e PHOTO_ENHANCE_ADMIN_USER=you \
+  -e PHOTO_ENHANCE_ADMIN_PASSWORD='a-long-password' \
+  -v /srv/photo-enhance-data:/app/service/data/renders \
+  ghcr.io/akopmm/photo-enhance:latest
+```
+
+Building locally — the build context must be the **repo root**, not `service/`, because the Dockerfile pulls in `shared/model.py`:
+
+```bash
+docker build -f service/Dockerfile -t photo-enhance .
+```
+
+> `torchvision` must be resolved from the same CPU index as `torch`. `timm` pulls it in transitively, and the default PyPI wheel is a CUDA build whose compiled ops don't match (`operator torchvision::nms does not exist`). The Dockerfile installs the pair together.
+
+### From source
+
+```bash
+cd service
+python3 -m venv .venv && source .venv/bin/activate
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt
+uvicorn main:app --host 0.0.0.0 --port 5054
+```
+
+### First run
+
+The instance starts with no users. Either set `PHOTO_ENHANCE_ADMIN_USER` / `PHOTO_ENHANCE_ADMIN_PASSWORD`, or just open the page — the login screen offers a one-time "create admin" form. That form refuses once any user exists.
+
+Then, in **Settings**, add your Immich URL and an API key scoped to `album.read`, `asset.read`, `asset.view`, `asset.download`.
+
+Everything else — mode, masking toggles, concurrency, JPEG quality, users — is editable there and persisted to `data/renders/_config/` **inside the mounted volume**, so it survives image updates.
+
+> Keep that config path inside the volume. An earlier version wrote it to the volume's *parent*, which lives in the container's ephemeral layer, so every update silently wiped all users, their API keys and the session secret — while login still appeared to work, because the admin re-bootstraps from env.
+
+### Configuration
+
+| Variable | Default | Notes |
+|---|---|---|
+| `PHOTO_ENHANCE_ADMIN_USER` / `_PASSWORD` | — | Bootstraps the first admin only |
+| `RENDER_STORAGE_DIR` | `service/data/renders` | Renders **and** config |
+| `MAX_CONCURRENT_JOBS` | `3` | Whole-pipeline gate, decode included |
+| `IDLE_UNLOAD_MINUTES` | `15` | Drops the model when idle |
+| `INFERENCE_DEVICE` | `cpu` | or `openvino_cpu` / `openvino_gpu` |
+
+On concurrency: the gate covers the **entire** pipeline. An earlier version only locked the model call while RAW decode ran unbounded on the default thread pool, so ~30 concurrent imports meant ~30 simultaneous full-resolution decodes (~250-400MB each) and pegged the host. Segmentation has its own stricter `Semaphore(1)` on top.
+
+`INFERENCE_DEVICE=openvino_gpu` (with `/dev/dri` passed through) routes inference through an Intel iGPU. Measured on an i5-10500T this was **no faster** than plain CPU for the global-LUT path — each preset is a separate small dispatch, so overhead swamps the gain. Segmentation is a much better fit for that hardware if you want to revisit it.
+
+---
 
 ## Training your own model
 
-```
+Not needed to run the service — it ships with working pretrained weights. This exists if you want to train against the MIT-Adobe FiveK dataset yourself (Mac/MPS or CUDA).
+
+```bash
 cd training
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python3 download_raw.py --n_images 1500   # pulls from MIT's authoritative FiveK source
-python3 process_raw.py                     # builds the 480p training set
-python3 train.py --batch_size 32 --n_epochs 1000
+
+# Downloads + processes FiveK in disk-safe batches, deleting raws as it
+# goes. The full raw set is ~290GB; the processed 480p pairs are ~600MB.
+python3 fetch_dataset.py --target 5000 --batch 600 --min_free_gb 60
+
+python3 train.py --batch_size 32 --n_epochs 700
+python3 compare_models.py --checkpoint checkpoints/best.pt --dump_dir /tmp/cmp
 ```
 
-Copy the resulting `checkpoints/best.pt`'s `model` key into `service/weights/model.pt` to deploy it.
+`fetch_dataset.py` refuses to start a batch below `--min_free_gb`. An unbounded download once took a laptop down to 121MB free, which is why the guard is there.
+
+To deploy a checkpoint, copy `checkpoints/best.pt`'s `model` key into `service/weights/model.pt`.
+
+Two things worth knowing if you train:
+- **PSNR measures agreement with Expert C, not "looks good."** Clamp to [0,1] before scoring — the model legitimately overshoots, and unclamped values inflate MSE for pixels that were never visible.
+- `compare_models.py` documents its own biases in the file. The pretrained model was trained on all of FiveK, which includes whatever ends up in your test split, so that comparison favours it.
+
+---
 
 ## License
 
-Apache-2.0 (see `LICENSE`), matching the license of the original Image-Adaptive-3DLUT repository this project's model architecture and shipped pretrained weights are built on.
+Apache-2.0 (see `LICENSE`), matching the original Image-Adaptive-3DLUT repository this project's architecture and shipped weights come from.
