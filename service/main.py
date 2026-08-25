@@ -252,22 +252,26 @@ async def immich_thumbnail(asset_id: str, user: str = Depends(current_user)):
 
 @app.post("/api/import/immich/{asset_id}")
 async def import_from_immich(asset_id: str, user: str = Depends(current_user)):
-    try:
-        data, filename = await immich_client.get_original_bytes(user, asset_id)
-    except immich_client.NoCredentials as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(502, f"could not fetch original from Immich: {e}")
-    import_id = await pipeline.process_preview(
-        data, filename, source_type="immich", username=user, immich_asset_id=asset_id)
+    # Admission is taken BEFORE the fetch, so 30 queued clicks hold 30 queue
+    # slots rather than 30 full-resolution originals in memory.
+    async with pipeline.admission():
+        try:
+            data, filename = await immich_client.get_original_bytes(user, asset_id)
+        except immich_client.NoCredentials as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            raise HTTPException(502, f"could not fetch original from Immich: {e}")
+        import_id = await pipeline.process_preview(
+            data, filename, source_type="immich", username=user, immich_asset_id=asset_id)
     return {"import_id": import_id}
 
 
 @app.post("/api/import/upload")
 async def import_upload(file: UploadFile = File(...), user: str = Depends(current_user)):
-    data = await file.read()
-    import_id = await pipeline.process_preview(
-        data, file.filename, source_type="upload", username=user)
+    async with pipeline.admission():
+        data = await file.read()
+        import_id = await pipeline.process_preview(
+            data, file.filename, source_type="upload", username=user)
     return {"import_id": import_id}
 
 

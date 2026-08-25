@@ -17,6 +17,7 @@ full-resolution render of one style happens only when it's actually
 downloaded, and is cached after that.
 """
 import asyncio
+import contextlib
 import io
 import logging
 import os
@@ -60,6 +61,21 @@ _mask_gate = asyncio.Semaphore(1)
 # is acquired BEFORE _pipeline_gate so a waiting render doesn't sit on a
 # pipeline slot while it queues.
 _render_gate = asyncio.Semaphore(settings.get("max_concurrent_renders") or 2)
+
+# Admission control, held by the HTTP handler across the WHOLE request --
+# fetch included. _pipeline_gate starts too late: the Immich original (~32MB
+# for a CR3) is downloaded *before* process_preview is called, so 30 clicks
+# parked ~980MB of raw bytes in queued requests plus 30 simultaneous
+# downloads, none of it bounded. Measured: 30 concurrent imports peaked at
+# 11.7GB, of which ~1GB was raw bytes that had not yet reached the gate.
+_admission_gate = asyncio.Semaphore(settings.get("max_concurrent_jobs") or 3)
+
+
+@contextlib.asynccontextmanager
+async def admission():
+    """Wrap fetch + process so a queued request holds no payload."""
+    async with _admission_gate:
+        yield
 
 RAW_EXTENSIONS = {".cr3", ".cr2", ".arw", ".dng", ".nef", ".raf", ".orf", ".rw2"}
 THUMB_QUALITY = 82
