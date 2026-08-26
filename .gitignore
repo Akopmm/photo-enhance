@@ -13,3 +13,7 @@ service/.env
 experiments/.venv/
 experiments/out/
 experiments/
+
+# SCUNet denoise weights (72MB) are fetched at image build time by the
+# Dockerfile and checksum-verified there; they are not committed.
+service/weights/scunet_color_real_psnr.pth

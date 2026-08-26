@@ -5,8 +5,8 @@ Four complementary mask sources, because no single model does all of it well:
   subject  -- BiRefNet-lite (44M params, MIT). Purpose-built dichotomous
               segmentation; gives crisp foreground cutouts. This is the
               "Select Subject" equivalent and the best of the three.
-  sky      -- SegFormer trained on ADE20K, which has a dedicated `sky`
-              class. Also exposes other useful scene classes for free.
+  sky      -- UPerNet/ConvNeXt-tiny trained on ADE20K, which has a dedicated
+              `sky` class. Also exposes other useful scene classes for free.
   depth    -- Depth Anything V2 Small (24.8M, Apache-2.0). Lightroom's
               "Depth Range Mask": grade by distance instead of by object,
               which needs no foreground/background decision at all.
@@ -111,21 +111,50 @@ ADE_CLASSES = {
 }
 
 
-def _segformer():
-    if "segformer" not in _cache:
-        from transformers import SegformerForSemanticSegmentation, SegformerImageProcessor
-        name = "nvidia/segformer-b0-finetuned-ade-512-512"
-        proc = SegformerImageProcessor.from_pretrained(name)
-        model = SegformerForSemanticSegmentation.from_pretrained(name).eval().to(_device())
-        _cache["segformer"] = (proc, model)
-    return _cache["segformer"]
+# UPerNet/ConvNeXt-tiny rather than SegFormer-B0. Not for quality: the
+# NVIDIA licence on the SegFormer weights permits "research or evaluation
+# purposes only", which is incompatible with releasing this. UPerNet is MIT
+# and trained on the same ADE20K 150 classes.
+#
+# Checked before swapping, on the masks this service actually consumes
+# (sky, and the tree/grass/plant union behind the Foliage look):
+#   foliage  IoU 0.82 and 0.92 on two photos -- effectively the same mask
+#   sky      IoU 0.31, but by eye UPerNet is the BETTER of the two: SegFormer's
+#            sky came out patchy, full of holes, and leaked into blurred
+#            foreground, where UPerNet's is contiguous.
+# Costs ~60M params against 3.8M and roughly 3.4x the time -- both small
+# against the segmentation budget, and paid once per import.
+SEG_MODEL = "openmmlab/upernet-convnext-tiny"
+
+
+# UPerNet's pyramid pooling uses adaptive average pooling with sizes that
+# MPS refuses ("input sizes must be divisible by output sizes"), so it runs on
+# CPU regardless. The deploy target is CPU-only anyway; this only costs speed
+# on a Mac, and the alternative is masking silently failing there.
+def _seg_device():
+    return "cpu"
+
+
+def _segmenter():
+    if "segmenter" not in _cache:
+        from transformers import AutoImageProcessor, UperNetForSemanticSegmentation
+        proc = AutoImageProcessor.from_pretrained(SEG_MODEL)
+        model = UperNetForSemanticSegmentation.from_pretrained(SEG_MODEL).eval().to(_seg_device())
+        _cache["segmenter"] = (proc, model)
+    return _cache["segmenter"]
 
 
 @torch.no_grad()
 def _ade_labels(img: Image.Image) -> np.ndarray:
-    proc, model = _segformer()
-    inputs = proc(images=img.convert("RGB"), return_tensors="pt").to(_device())
-    return model(**inputs).logits.argmax(dim=1)[0].cpu().numpy().astype(np.int32)
+    proc, model = _segmenter()
+    rgb = img.convert("RGB")
+    inputs = proc(images=rgb, return_tensors="pt").to(_seg_device())
+    logits = model(**inputs).logits
+    # UPerNet emits logits at its own working size; put them back on the
+    # image grid before argmax so callers get a mask they can use directly.
+    logits = torch.nn.functional.interpolate(
+        logits, size=(rgb.size[1], rgb.size[0]), mode="bilinear", align_corners=False)
+    return logits.argmax(dim=1)[0].cpu().numpy().astype(np.int32)
 
 
 def class_mask(img: Image.Image, class_name: str) -> np.ndarray:

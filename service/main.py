@@ -342,12 +342,14 @@ async def styles_catalogue(user: str = Depends(current_user)):
 
 @app.get("/api/gallery/{import_id}/{style_key}_preview.jpg")
 async def gallery_preview(import_id: str, style_key: str, strength: float = 1.0,
+                          denoise: float | None = None,
                           user: str = Depends(current_user)):
     """Big editor preview: always rendered live from the stored baseline, so
     it reflects the current look AND strength immediately. Falls back to the
     small stored thumbnail for imports made before baselines were kept."""
     _owned(import_id, user)
-    data = await pipeline.render_preview_at_strength(import_id, style_key, strength)
+    data = await pipeline.render_preview_at_strength(import_id, style_key, strength,
+                                                    denoise_amount=denoise)
     if data is not None:
         return Response(content=data, media_type="image/jpeg",
                         headers={"Cache-Control": "no-store"})
@@ -357,11 +359,13 @@ async def gallery_preview(import_id: str, style_key: str, strength: float = 1.0,
 @app.get("/api/gallery/{import_id}/{style_key}.jpg")
 async def gallery_render_full(import_id: str, style_key: str, crop: str | None = None,
                               strength: float = 1.0, crop_rect: str | None = None,
+                              denoise: float | None = None,
                               user: str = Depends(current_user)):
     _owned(import_id, user)
     try:
         path = await pipeline.render_full_style(import_id, style_key, crop_key=crop,
-                                                strength=strength, crop_rect=crop_rect)
+                                                strength=strength, crop_rect=crop_rect,
+                                                denoise_amount=denoise)
     except (FileNotFoundError, KeyError):
         raise HTTPException(404, "unknown import or style")
     except Exception as e:
@@ -390,6 +394,7 @@ def _reap_jobs():
 async def render_start(import_id: str = Form(...), style_key: str = Form(...),
                        crop: str | None = Form(None), strength: float = Form(1.0),
                        crop_rect: str | None = Form(None),
+                       denoise: float | None = Form(None),
                        user: str = Depends(current_user)):
     _owned(import_id, user)
     _reap_jobs()
@@ -405,10 +410,10 @@ async def render_start(import_id: str = Form(...), style_key: str = Form(...),
         try:
             await pipeline.render_full_style(import_id, style_key, crop_key=crop,
                                              strength=strength, progress=on_progress,
-                                             crop_rect=crop_rect)
+                                             crop_rect=crop_rect, denoise_amount=denoise)
             job.update(state="done", pct=100, message="Ready", updated=time.time(),
                        url=f"/api/gallery/{import_id}/{style_key}.jpg"
-                           + _render_query(crop, strength, crop_rect))
+                           + _render_query(crop, strength, crop_rect, denoise))
         except (FileNotFoundError, KeyError) as e:
             job.update(state="error", error=f"unknown import or style: {e}", updated=time.time())
         except Exception as e:  # noqa: BLE001
@@ -418,8 +423,10 @@ async def render_start(import_id: str = Form(...), style_key: str = Form(...),
     return JSONResponse({"job_id": job_id})
 
 
-def _render_query(crop, strength, crop_rect=None):
+def _render_query(crop, strength, crop_rect=None, denoise=None):
     params = []
+    if denoise is not None:
+        params.append(f"denoise={denoise:.2f}")
     if crop_rect:
         params.append(f"crop_rect={crop_rect}")
     elif crop:

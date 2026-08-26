@@ -41,6 +41,12 @@ DEFAULTS = {
     "subject_masking": True,
     "sky_masking": True,
     "depth_masking": True,
+    # off | auto | always. "auto" denoises only when the corrected baseline
+    # actually measures noisy, so clean daylight frames are not softened for
+    # nothing -- and do not pay the cost, which is the largest in the service.
+    "denoise_mode": "auto",
+    "denoise_threshold": 3.0,
+    "denoise_amount": 0.9,
     "cinematic_presets": True,
     "max_concurrent_jobs": int(os.environ.get("MAX_CONCURRENT_JOBS", "3")),
     "idle_unload_minutes": float(os.environ.get("IDLE_UNLOAD_MINUTES", "15")),
@@ -58,6 +64,9 @@ EDITABLE = {
     "subject_masking": bool,
     "sky_masking": bool,
     "depth_masking": bool,
+    "denoise_mode": str,
+    "denoise_threshold": float,
+    "denoise_amount": float,
     "cinematic_presets": bool,
     "max_concurrent_jobs": int,
     "idle_unload_minutes": float,

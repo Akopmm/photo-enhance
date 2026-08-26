@@ -1,0 +1,4 @@
+network_scunet.py is vendored from https://github.com/cszn/SCUNet
+Licensed under the Apache License, Version 2.0.
+Weights (scunet_color_real_psnr.pth) are the authors' released real-noise
+model, fetched at image build time; see service/Dockerfile.

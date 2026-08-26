@@ -316,6 +316,15 @@
     </div>
   </div>
 
+  <div class="panel" id="denoise-panel" hidden>
+    <div class="label"><span>Denoise</span><span id="denoise-hint"></span></div>
+    <div class="strength-row">
+      <input type="range" id="denoise" min="0" max="100" step="5" value="90"
+             aria-label="Denoise amount" />
+      <output id="denoise-out">90%</output>
+    </div>
+  </div>
+
   <div class="panel">
     <div class="label"><span>Looks</span></div>
     <div class="chips" id="look-groups" style="margin-bottom:.6rem"></div>
@@ -363,6 +372,7 @@ const state = {
   strength: 100,
   crop: '',
   cropRect: null,
+  denoise: null,     // null = this photo has none available
   group: 'smart',
 };
 
@@ -541,15 +551,28 @@ async function importPhoto(startFn, name, btn) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const { import_id } = await res.json();
     tile.remove();
-    await loadLibrary();
-    toast('Ready — opening it now');
-    openEditor(import_id);
+    const wasEditing = !!state.current;
+    if (wasEditing) {
+      // Do NOT yank the user out of the photo they are working on. Imports
+      // finish minutes later; jumping the view is the kind of "helpful" that
+      // loses someone's place.
+      toast(`${name} is ready — it's in your library`);
+    } else {
+      await loadLibrary();
+      toast('Ready');
+      openEditor(import_id);
+    }
   } catch (e) {
     tile.remove();
     renderLibrary();
     toast(`Could not process ${name}: ${e}`, true);
   } finally {
     if (btn) btn.disabled = false;
+    // Refresh the underlying list so the new photo is there when they go
+    // back, without changing what is on screen right now.
+    if (state.current) {
+      try { state.imports = await jget('/api/gallery'); } catch (_) {}
+    }
   }
 }
 
@@ -574,6 +597,19 @@ async function openEditor(importId) {
   $('head-title').textContent = meta.source_name || 'photo';
   $('strength').value = 100;
   $('strength-out').textContent = '100%';
+  // Only offered when the import actually measured noisy -- a denoise slider
+  // on a clean daylight frame is a control that can only make things worse.
+  const dn = meta.denoise || {};
+  if (dn.available) {
+    state.denoise = Math.round((dn.amount ?? 0.9) * 100);
+    $('denoise-panel').hidden = false;
+    $('denoise').value = state.denoise;
+    $('denoise-out').textContent = state.denoise + '%';
+    $('denoise-hint').textContent = `noise ${Number(dn.sigma).toFixed(1)}`;
+  } else {
+    state.denoise = null;
+    $('denoise-panel').hidden = true;
+  }
   $('hero-orig').src = `/api/gallery/${meta.id}/original_thumb.jpg`;
   resetProgress();
   renderGroups();
@@ -763,8 +799,12 @@ function updateHero() {
   const token = ++heroToken;
   const wrap = $('hero-wrap');
   const s = state.strength / 100;
+  const q = new URLSearchParams();
+  if (s < 1) q.set('strength', s.toFixed(2));
+  if (state.denoise !== null) q.set('denoise', (state.denoise / 100).toFixed(2));
+  const qs = q.toString();
   const url = `/api/gallery/${state.current.id}/${state.style}_preview.jpg`
-            + (s < 1 ? `?strength=${s.toFixed(2)}` : '');
+            + (qs ? `?${qs}` : '');
   const label = (state.current.styles.find(x => x.key === state.style) || {}).label || '';
   $('hero-tag').textContent = state.strength >= 100 ? label : `${label} · ${state.strength}%`;
   wrap.classList.add('loading');
@@ -778,6 +818,14 @@ function updateHero() {
   img.onerror = () => { if (token === heroToken) wrap.classList.remove('loading'); };
   img.src = url;
 }
+
+let denoiseTimer = null;
+$('denoise').addEventListener('input', e => {
+  state.denoise = Number(e.target.value);
+  $('denoise-out').textContent = state.denoise + '%';
+  clearTimeout(denoiseTimer);
+  denoiseTimer = setTimeout(() => { updateHero(); resetProgress(); }, 140);
+});
 
 let strengthTimer = null;
 $('strength').addEventListener('input', e => {
@@ -894,6 +942,7 @@ $('download').addEventListener('click', async () => {
     form.append('crop', state.crop);
   }
   form.append('strength', (state.strength / 100).toFixed(2));
+  if (state.denoise !== null) form.append('denoise', (state.denoise / 100).toFixed(2));
   try {
     const start = await fetch('/api/render', { method: 'POST', body: form });
     if (!start.ok) throw new Error(`HTTP ${start.status}`);
@@ -906,7 +955,8 @@ $('download').addEventListener('click', async () => {
     });
     const name = `${(state.current.source_name || 'photo').replace(/\.[^.]+$/, '')}`
       + `_${state.style}${state.crop ? '_' + state.crop : ''}`
-      + `${state.strength < 100 ? '_' + state.strength + 'pct' : ''}.jpg`;
+      + `${state.strength < 100 ? '_' + state.strength + 'pct' : ''}`
+      + `${state.denoise !== null && state.denoise !== 90 ? '_dn' + state.denoise : ''}.jpg`;
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = name;

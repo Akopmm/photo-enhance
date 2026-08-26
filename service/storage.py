@@ -98,6 +98,25 @@ def save_baseline_thumb(import_id: str, thumb_bytes: bytes):
         f.write(thumb_bytes)
 
 
+def save_denoised_thumb(import_id: str, thumb_bytes: bytes):
+    """The FULLY denoised baseline, stored beside the untouched one.
+
+    Keeping both is what makes the denoise slider free: any amount is a
+    blend between these two images, so the user can dial it without the
+    model running again. Baking one chosen amount into the baseline would
+    have made the control a re-render each time."""
+    with open(os.path.join(_import_dir(import_id), "baseline_denoise.jpg"), "wb") as f:
+        f.write(thumb_bytes)
+
+
+def denoised_thumb_path(import_id: str) -> str:
+    return os.path.join(_import_dir(import_id), "baseline_denoise.jpg")
+
+
+def has_denoised_thumb(import_id: str) -> bool:
+    return os.path.exists(denoised_thumb_path(import_id))
+
+
 def baseline_thumb_path(import_id: str) -> str:
     return os.path.join(_import_dir(import_id), "baseline_thumb.jpg")
 
@@ -165,6 +184,14 @@ def load_mask(import_id: str, name: str) -> bytes | None:
         return None
     with open(path, "rb") as f:
         return f.read()
+
+
+def save_denoise_info(import_id: str, info: dict):
+    meta = _read_meta(import_id)
+    if not meta:
+        return
+    meta["denoise"] = info
+    _write_meta(import_id, meta)
 
 
 def save_scene(import_id: str, scene: dict, recipes: list):

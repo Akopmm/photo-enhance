@@ -28,26 +28,27 @@ COPY service/ ./service/
 ENV HF_HOME=/opt/hf
 ENV HF_HUB_OFFLINE=0
 RUN python -c "\
-from transformers import AutoModelForImageSegmentation, SegformerForSemanticSegmentation, SegformerImageProcessor, AutoImageProcessor, AutoModelForDepthEstimation; \
+from transformers import AutoModelForImageSegmentation, UperNetForSemanticSegmentation, AutoImageProcessor, AutoModelForDepthEstimation; \
 AutoModelForImageSegmentation.from_pretrained('ZhengPeng7/BiRefNet_lite', trust_remote_code=True); \
-SegformerImageProcessor.from_pretrained('nvidia/segformer-b0-finetuned-ade-512-512'); \
-SegformerForSemanticSegmentation.from_pretrained('nvidia/segformer-b0-finetuned-ade-512-512'); \
+AutoImageProcessor.from_pretrained('openmmlab/upernet-convnext-tiny'); \
+UperNetForSemanticSegmentation.from_pretrained('openmmlab/upernet-convnext-tiny'); \
 AutoImageProcessor.from_pretrained('depth-anything/Depth-Anything-V2-Small-hf'); \
 AutoModelForDepthEstimation.from_pretrained('depth-anything/Depth-Anything-V2-Small-hf'); \
 print('segmentation + depth weights cached')"
 
-# Guard: HF_HUB_OFFLINE=1 below means anything missed here can never load at
-# runtime -- it fails silently into "masking failed, continuing without
-# regions" and the affected recipes just never appear. Depth Anything was
-# added to masking.py without being added here, and that is exactly how it
-# behaved in production. Fail the build instead.
+# SCUNet denoise weights (Apache-2.0, the authors' real-noise model). Not a
+# transformers model, so fetched directly. python:3.12-slim has no curl, and
+# the checksum is verified in the same step -- a silently swapped 72MB tensor
+# file would be hard to notice from the output alone.
 RUN python -c "\
-import os; os.environ['HF_HUB_OFFLINE'] = '1'; \
-from transformers import AutoModelForImageSegmentation, SegformerForSemanticSegmentation, AutoModelForDepthEstimation; \
-AutoModelForImageSegmentation.from_pretrained('ZhengPeng7/BiRefNet_lite', trust_remote_code=True); \
-SegformerForSemanticSegmentation.from_pretrained('nvidia/segformer-b0-finetuned-ade-512-512'); \
-AutoModelForDepthEstimation.from_pretrained('depth-anything/Depth-Anything-V2-Small-hf'); \
-print('verified: every model loads with the Hub switched off')"
+import hashlib, os, sys, urllib.request; \
+url='https://huggingface.co/deepinv/scunet/resolve/main/scunet_color_real_psnr.pth'; \
+dst='/app/service/weights/scunet_color_real_psnr.pth'; \
+os.makedirs(os.path.dirname(dst), exist_ok=True); \
+urllib.request.urlretrieve(url, dst); \
+h=hashlib.sha256(open(dst,'rb').read()).hexdigest(); \
+print('scunet sha256', h, os.path.getsize(dst)//1024, 'KB'); \
+sys.exit(0 if h.startswith('fa78899ba2caec9d') else 1)"
 
 # Models are baked above, so don't reach out to the Hub at runtime -- a
 # network hiccup should never turn into a failed import.

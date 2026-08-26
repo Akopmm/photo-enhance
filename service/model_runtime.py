@@ -104,13 +104,14 @@ class ModelRuntime:
         # meant enhanced mode permanently held that 1.2GB after a single
         # photo, which defeats the whole point of idle-unloading. Import
         # lazily so classic mode never pulls transformers in at all.
-        try:
-            import masking
-            if masking.loaded():
-                masking.unload()
-                released = True
-        except Exception as e:  # noqa: BLE001
-            logger.warning("could not release segmentation models: %s", e)
+        for mod in ("masking", "denoise"):
+            try:
+                m = __import__(mod)
+                if m.loaded():
+                    m.unload()
+                    released = True
+            except Exception as e:  # noqa: BLE001
+                logger.warning("could not release %s models: %s", mod, e)
 
         if released:
             gc.collect()
@@ -122,11 +123,12 @@ class ModelRuntime:
             await asyncio.sleep(60)
             if (time.time() - self._last_used) <= IDLE_UNLOAD_MINUTES * 60:
                 continue
-            try:
-                import masking
-                seg_loaded = masking.loaded()
-            except Exception:  # noqa: BLE001
-                seg_loaded = False
+            seg_loaded = False
+            for mod in ("masking", "denoise"):
+                try:
+                    seg_loaded = seg_loaded or __import__(mod).loaded()
+                except Exception:  # noqa: BLE001
+                    pass
             # Segmentation can outlive the colour model, so gate on either
             # being resident rather than on self._model alone.
             if self._model is not None or seg_loaded:

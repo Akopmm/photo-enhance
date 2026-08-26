@@ -191,6 +191,33 @@ FAR_BAND_PCT = 40
 _OUTDOOR_CLASSES = ("sky", "mountain", "tree", "grass", "water", "sea", "building")
 
 
+def _should_denoise(arr: np.ndarray) -> tuple[bool, float]:
+    """(do it?, measured sigma). Cheap enough to always measure, so `auto`
+    can decide per photo rather than making the user judge noise by eye."""
+    mode = (settings.get("denoise_mode") or "auto").lower()
+    if mode == "off":
+        return False, 0.0
+    import denoise as dn
+    if not dn.available():
+        return False, 0.0
+    sigma = dn.estimate_sigma(arr)
+    if mode == "always":
+        return True, sigma
+    return sigma >= float(settings.get("denoise_threshold") or 3.0), sigma
+
+
+def _denoise_full(arr: np.ndarray, progress=None) -> np.ndarray:
+    """Fully denoised (amount = 1). Callers blend toward the original
+    themselves, so the amount is never baked in."""
+    import denoise as dn
+    return dn.denoise(arr, progress=progress)
+
+
+def _blend_denoise(original: np.ndarray, denoised: np.ndarray, amount: float) -> np.ndarray:
+    import denoise as dn
+    return dn.blend(original, denoised, amount)
+
+
 def _tensor_to_pil(t: torch.Tensor, long_edge: int | None = None) -> Image.Image:
     if long_edge:
         t = _resize_tensor(t, long_edge)
@@ -382,9 +409,28 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
         baseline = await runtime.infer(tensor)
         arr = tensor = None  # ~576MB of decode buffers, dead once inferred
         edge = _thumb_edge()
+
+        # Denoise ONCE here, on the baseline, so every look, thumbnail and
+        # hero inherits it without paying again. Done at HERO_EDGE rather
+        # than native resolution: this model has no internal downsampling, so
+        # full-res would be minutes. The full-resolution render redoes it
+        # tiled, because a denoised preview and a noisy download would be the
+        # same divergence bug we just removed from masking.
+        hero_for_noise = await asyncio.to_thread(_resize_tensor, baseline, HERO_EDGE)
+        probe = hero_for_noise.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
+        do_dn, sigma = await asyncio.to_thread(_should_denoise, probe)
+        default_amount = float(settings.get("denoise_amount") or 0.9)
+        denoise_meta = {"available": bool(do_dn), "sigma": round(sigma, 2),
+                        "amount": default_amount}
+        clean = None
+        if do_dn:
+            logger.info("denoising %s (sigma %.2f)", filename, sigma)
+            clean = await asyncio.to_thread(_denoise_full, probe)
+        probe = None
         small_baseline = await asyncio.to_thread(_resize_tensor, baseline, edge)
 
         import_id = storage.create_import(filename, source_type, immich_asset_id, owner=username)
+        await asyncio.to_thread(storage.save_denoise_info, import_id, denoise_meta)
 
         if source_type == "upload":
             await asyncio.to_thread(storage.save_source_upload, import_id, raw_bytes, filename)
@@ -400,11 +446,23 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
         orig_bytes = await asyncio.to_thread(_tensor_to_jpeg_bytes, small_normal, THUMB_QUALITY)
         await asyncio.to_thread(storage.save_original_thumb, import_id, orig_bytes)
 
-        hero_baseline = await asyncio.to_thread(_resize_tensor, baseline, HERO_EDGE)
+        # Store BOTH baselines: the untouched one, and (when this photo was
+        # noisy enough to bother) the fully denoised one. Any denoise amount
+        # is then a blend between the two, so the slider costs nothing.
         baseline_bytes = await asyncio.to_thread(
-            _tensor_to_jpeg_bytes, hero_baseline, THUMB_QUALITY)
-        hero_baseline = None
+            _tensor_to_jpeg_bytes, hero_for_noise, THUMB_QUALITY)
         await asyncio.to_thread(storage.save_baseline_thumb, import_id, baseline_bytes)
+        if clean is not None:
+            dn_bytes = await asyncio.to_thread(_array_to_jpeg_bytes, clean, THUMB_QUALITY)
+            await asyncio.to_thread(storage.save_denoised_thumb, import_id, dn_bytes)
+            # The filmstrip thumbnails are rendered from the default amount;
+            # they exist to pick a LOOK, and noise is invisible at 104px.
+            base_np = hero_for_noise.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
+            merged = await asyncio.to_thread(_blend_denoise, base_np, clean, default_amount)
+            baseline = torch.from_numpy(merged).permute(2, 0, 1).unsqueeze(0).contiguous()
+            small_baseline = await asyncio.to_thread(_resize_tensor, baseline, edge)
+            base_np = merged = None
+        clean = hero_for_noise = None
 
         # Global styles (both modes)
         for key, label, params in _style_list():
@@ -457,7 +515,8 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
     return import_id
 
 
-async def render_preview_at_strength(import_id: str, style_key: str, strength: float) -> bytes:
+async def render_preview_at_strength(import_id: str, style_key: str, strength: float,
+                                     denoise_amount: float | None = None) -> bytes:
     """Re-render ONE region preview at a given strength, from the stored
     baseline thumbnail and masks. No RAW decode, no model -- it is a 480px
     composite, so the slider can drive it interactively.
@@ -478,6 +537,15 @@ async def render_preview_at_strength(import_id: str, style_key: str, strength: f
     def _render():
         img = Image.open(storage.baseline_thumb_path(import_id)).convert("RGB")
         base = np.asarray(img).astype(np.float32) / 255.0
+        # The denoise slider is a blend between the two stored baselines --
+        # no model runs, so it is as responsive as the strength slider.
+        dn_meta = meta.get("denoise") or {}
+        amt = dn_meta.get("amount", 0.9) if denoise_amount is None else denoise_amount
+        if storage.has_denoised_thumb(import_id):
+            clean = np.asarray(Image.open(storage.denoised_thumb_path(import_id))
+                               .convert("RGB")).astype(np.float32) / 255.0
+            if clean.shape == base.shape:
+                base = _blend_denoise(base, clean, float(amt))
         if style_key in global_styles:
             # A global style is just a recipe with one whole-frame layer, so
             # region_grade's strength blending covers it too -- which is why
@@ -523,7 +591,8 @@ def _parse_crop_rect(spec: str | None) -> dict | None:
 
 async def render_full_style(import_id: str, style_key: str, crop_key: str | None = None,
                             strength: float = 1.0, progress=None,
-                            crop_rect: str | None = None) -> str:
+                            crop_rect: str | None = None,
+                            denoise_amount: float | None = None) -> str:
     """Full-resolution render of one style, on first request, then cached.
 
     `crop_key` optionally applies one of the stored composition suggestions.
@@ -550,6 +619,10 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
         cache_key = style_key if not crop_key else f"{style_key}__{crop_key}"
     if strength < 1.0:
         cache_key = f"{cache_key}__s{round(strength * 100):03d}"
+    _dn_meta = (storage.get_import(import_id) or {}).get("denoise") or {}
+    _dn_amt = _dn_meta.get("amount", 0.9) if denoise_amount is None else denoise_amount
+    if _dn_meta.get("available") and _dn_amt:
+        cache_key = f"{cache_key}__d{round(float(_dn_amt) * 100):03d}"
     if storage.full_render_exists(import_id, cache_key):
         _say(100, "Ready")
         return storage.full_render_path(import_id, cache_key)
@@ -570,6 +643,18 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
         _say(45, "Colour model")
         baseline = await runtime.infer(tensor)
         arr = tensor = None
+
+        if _dn_meta.get("available") and float(_dn_amt) > 0:
+            _say(50, "Denoising")
+            base_np = baseline.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
+
+            def _tile_progress(done, total):
+                _say(50 + int(28 * done / max(total, 1)), f"Denoising tile {done}/{total}")
+
+            clean = await asyncio.to_thread(_denoise_full, base_np, _tile_progress)
+            merged = await asyncio.to_thread(_blend_denoise, base_np, clean, float(_dn_amt))
+            baseline = torch.from_numpy(merged).permute(2, 0, 1).unsqueeze(0).contiguous()
+            base_np = clean = merged = None
 
         _say(60, "Applying the look")
         if style_key in global_styles:
