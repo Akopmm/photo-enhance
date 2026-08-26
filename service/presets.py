@@ -33,6 +33,31 @@ def _box_blur(a: torch.Tensor, r: int) -> torch.Tensor:
     return a
 
 
+# Local-contrast ops need a LOW-FREQUENCY estimate, and "low frequency" has
+# to mean the same thing at every output size. A fixed radius-8 box blur
+# spans 1.67% of a 480px preview but 0.13% of a 6000px render -- so `dehaze`
+# was a gentle local-contrast lift in the gallery and a tight unsharp mask in
+# the download, drawing a bright rim around every strong edge (visible as a
+# halo tracing a dark car against light ground).
+#
+# Computing the blur at a fixed working resolution and upsampling makes the
+# operation resolution-independent by construction, and is far cheaper than a
+# proportionally-scaled kernel (radius 100 at 6000px).
+LOWPASS_REF_EDGE = 480
+LOWPASS_RADIUS = 8
+
+
+def _lowpass(a: torch.Tensor) -> torch.Tensor:
+    h, w = a.shape[-2], a.shape[-1]
+    scale = LOWPASS_REF_EDGE / max(h, w)
+    if scale >= 1:
+        return _box_blur(a, LOWPASS_RADIUS)
+    sh, sw = max(1, round(h * scale)), max(1, round(w * scale))
+    small = F.interpolate(a, size=(sh, sw), mode="area")
+    small = _box_blur(small, LOWPASS_RADIUS)
+    return F.interpolate(small, size=(h, w), mode="bilinear", align_corners=False)
+
+
 def _s_curve(x: torch.Tensor, strength: float) -> torch.Tensor:
     return x + strength * (x - 0.5) * (1 - torch.abs(2 * x - 1))
 
@@ -53,7 +78,7 @@ def apply_look(arr: torch.Tensor, p: dict) -> torch.Tensor:
     lum = _luminance(a)
     dh = p.get("dehaze", 0.0)
     if dh:
-        blurred = _box_blur(lum, 8)
+        blurred = _lowpass(lum)
         detail = lum - blurred
         lum2 = lum + detail * dh
         gain = torch.clamp(lum2, 0.001, 4) / torch.clamp(lum, 0.001, 4)

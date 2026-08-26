@@ -308,8 +308,17 @@ async def gallery_crop_thumb(import_id: str, crop_key: str, user: str = Depends(
 
 
 @app.get("/api/gallery/{import_id}/{style_key}_thumb.jpg")
-async def gallery_thumb(import_id: str, style_key: str, user: str = Depends(current_user)):
+async def gallery_thumb(import_id: str, style_key: str, strength: float = 1.0,
+                        user: str = Depends(current_user)):
     _owned(import_id, user)
+    # A strength below 1 re-composites the preview live from the stored
+    # baseline + masks (cheap at 480px), so the slider actually shows what it
+    # will do instead of silently only affecting the download.
+    if strength < 1.0:
+        data = await pipeline.render_preview_at_strength(import_id, style_key, strength)
+        if data is not None:
+            return Response(content=data, media_type="image/jpeg",
+                            headers={"Cache-Control": "no-store"})
     return FileResponse(storage.thumb_path(import_id, style_key), media_type="image/jpeg")
 
 

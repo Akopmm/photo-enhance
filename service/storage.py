@@ -89,6 +89,23 @@ def original_thumb_path(import_id: str) -> str:
     return os.path.join(_import_dir(import_id), "original_thumb.jpg")
 
 
+def save_baseline_thumb(import_id: str, thumb_bytes: bytes):
+    """The model's corrected baseline at preview size, ungraded. Storing it
+    (~40KB) is what lets the region-strength slider re-render previews live:
+    load this, load the masks, composite at 480px. Without it the only way to
+    show a different strength would be re-decoding the RAW."""
+    with open(os.path.join(_import_dir(import_id), "baseline_thumb.jpg"), "wb") as f:
+        f.write(thumb_bytes)
+
+
+def baseline_thumb_path(import_id: str) -> str:
+    return os.path.join(_import_dir(import_id), "baseline_thumb.jpg")
+
+
+def has_baseline_thumb(import_id: str) -> bool:
+    return os.path.exists(baseline_thumb_path(import_id))
+
+
 def save_preview(import_id: str, style_key: str, style_label: str, thumb_bytes: bytes):
     with open(os.path.join(_import_dir(import_id), f"{style_key}_thumb.jpg"), "wb") as f:
         f.write(thumb_bytes)

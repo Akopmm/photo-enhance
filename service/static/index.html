@@ -262,7 +262,8 @@ async function loadGallery() {
       </div>` : ''}
       ${(imp.region_recipes && imp.region_recipes.length) ? `
       <div class="strength-row">
-        <label for="str-${imp.id}" style="font-size:0.75rem; opacity:0.7;">Region strength</label>
+        <label for="str-${imp.id}" style="font-size:0.75rem; opacity:0.7;"
+               title="How far the region-aware looks are applied. 0% is the untouched photo; 100% is the full effect. Only affects the region styles below.">Region strength</label>
         <input type="range" id="str-${imp.id}" min="0" max="100" step="5" value="100" />
         <output for="str-${imp.id}">100%</output>
       </div>` : ''}
@@ -291,9 +292,24 @@ async function loadGallery() {
     const strengthInput = card.querySelector('.strength-row input');
     if (strengthInput) {
       const out = card.querySelector('.strength-row output');
+      const regionKeys = imp.region_recipes || [];
+      let debounce = null;
+      const repaint = () => {
+        const pct = Number(strengthInput.value);
+        for (const key of regionKeys) {
+          const img = card.querySelector(`.dl-style[data-style="${key}"] img`);
+          if (!img) continue;
+          const base = `/api/gallery/${imp.id}/${key}_thumb.jpg`;
+          // At 100% fall back to the stored preview so we don't ask the
+          // server to recompute what it already has on disk.
+          img.src = pct >= 100 ? base : `${base}?strength=${(pct / 100).toFixed(2)}`;
+        }
+      };
       strengthInput.addEventListener('input', () => {
         card.dataset.strength = strengthInput.value;
         out.textContent = strengthInput.value + '%';
+        clearTimeout(debounce);
+        debounce = setTimeout(repaint, 180);
       });
     }
     card.querySelectorAll('.dl-style').forEach(btn => {

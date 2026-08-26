@@ -159,7 +159,13 @@ MASK_NAMES = ("subject", "sky", "depth", "foliage")
 # constants shared between the 480px preview and the 6000px render, which
 # made the downloaded edges ~12.5x harder than the ones actually approved in
 # the gallery -- the exact artefact feather() exists to prevent.
-_FEATHER = {"subject": 0.004, "sky": 0.014, "foliage": 0.010}
+_FEATHER = {"subject": 0.002, "sky": 0.012, "foliage": 0.008}
+
+# How far to pull each matte inward before feathering. Segmentation mattes
+# run wide, and the overhang keeps the region's grade on background pixels --
+# the glow around the subject in Selective Colour. Subject mattes are the
+# crispest and take the most choke; sky is graded softly so it needs least.
+_CHOKE = {"subject": 0.45, "sky": 0.20, "foliage": 0.30}
 
 # Depth grading does nothing on a flat scene, so the depth looks are offered
 # only when the depth map actually spans a range.
@@ -253,7 +259,8 @@ def _prepare_masks(stored: dict, size: tuple[int, int], only: tuple | None = Non
                 out["far"] = masking.depth_band(m, 0.0, far_edge)
             del m
         else:
-            out[key] = masking.refine(m, feather_frac=_FEATHER.get(key, 0.006))
+            out[key] = masking.refine(m, feather_frac=_FEATHER.get(key, 0.006),
+                                      choke_amount=_CHOKE.get(key, 0.0))
     return out
 
 
@@ -385,6 +392,10 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
         orig_bytes = await asyncio.to_thread(_tensor_to_jpeg_bytes, small_normal, THUMB_QUALITY)
         await asyncio.to_thread(storage.save_original_thumb, import_id, orig_bytes)
 
+        baseline_bytes = await asyncio.to_thread(
+            _tensor_to_jpeg_bytes, small_baseline, THUMB_QUALITY)
+        await asyncio.to_thread(storage.save_baseline_thumb, import_id, baseline_bytes)
+
         # Global styles (both modes)
         for key, label, params in _style_list():
             styled = await runtime.render_style(small_baseline, params)
@@ -434,6 +445,36 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
     logger.info("preview: %s -> %s (user=%s, mode=%s)", filename, import_id,
                 username, settings.get("mode"))
     return import_id
+
+
+async def render_preview_at_strength(import_id: str, style_key: str, strength: float) -> bytes:
+    """Re-render ONE region preview at a given strength, from the stored
+    baseline thumbnail and masks. No RAW decode, no model -- it is a 480px
+    composite, so the slider can drive it interactively.
+
+    Returns JPEG bytes, or None if this import predates the stored baseline
+    (older imports keep their fixed 100% previews).
+    """
+    if not storage.has_baseline_thumb(import_id):
+        return None
+    stored = await asyncio.to_thread(_load_masks, import_id)
+    if not stored:
+        return None
+    meta = storage.get_import(import_id) or {}
+
+    def _render():
+        img = Image.open(storage.baseline_thumb_path(import_id)).convert("RGB")
+        base = np.asarray(img).astype(np.float32) / 255.0
+        h, w = base.shape[:2]
+        masks = _prepare_masks(stored, (w, h), only=_RECIPE_MASKS.get(style_key))
+        recipe = next((r for k, _l, r in _region_recipes(masks, meta.get("scene", {}))
+                       if k == style_key), None)
+        if recipe is None:
+            return None
+        out = rg.region_grade(base, recipe, min(max(strength, 0.0), 1.0))
+        return _array_to_jpeg_bytes(out, THUMB_QUALITY)
+
+    return await asyncio.to_thread(_render)
 
 
 async def _get_original_bytes(import_id: str) -> tuple[bytes, str]:
