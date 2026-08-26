@@ -452,14 +452,12 @@ async function loadLibrary() {
 
 function renderLibrary() {
   const grid = $('lib-grid');
-  const pending = [...grid.querySelectorAll('.tile.pending')];
   grid.innerHTML = '';
-  if (!state.imports.length && !pending.length) {
+  if (!state.imports.length) {
     grid.innerHTML = `<div class="empty" style="grid-column:1/-1">
       <p>Nothing here yet.</p><p style="font-size:.9rem">Add a photo from Immich or upload a RAW file.</p></div>`;
     return;
   }
-  for (const p of pending) grid.appendChild(p);
   for (const imp of state.imports) {
     // Still processing on the server: shown as a placeholder, and because
     // the server reports it, this survives a page refresh.
@@ -483,17 +481,6 @@ function renderLibrary() {
 }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-function addPendingTile(name) {
-  const grid = $('lib-grid');
-  const empty = grid.querySelector('.empty');
-  if (empty) empty.remove();
-  const d = document.createElement('div');
-  d.className = 'tile pending';
-  d.innerHTML = `<div class="spinner"></div><span class="cap">${escapeHtml(name)}</span>`;
-  grid.prepend(d);
-  return d;
 }
 
 // ---------------------------------------------------------------- picker
@@ -614,30 +601,21 @@ function sendUpload(file) {
 // The sheet STAYS OPEN. Picking one photo used to close it, which made
 // selecting a batch a matter of reopening the picker each time.
 async function importPhoto(startFn, name, btn) {
-  const tile = addPendingTile(name);
   if (btn) { btn.disabled = true; btn.classList.add('queued'); }
   toast(`Processing ${name}…`);
   try {
     const res = await startFn();
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     await res.json();
-    // The server has taken it and will finish on its own. The placeholder
-    // now comes from /api/gallery rather than this browser, so it survives a
-    // reload, and closing the tab no longer cancels the work.
-    tile.remove();
+    // The server has taken it and will finish on its own, and reports it as
+    // pending from /api/gallery -- which is the ONLY source of pending tiles.
+    // A browser-side placeholder alongside it showed every photo twice.
     await loadLibrary();
-    const import_id = null;
-    const wasEditing = !!state.current || !!picker;
-    if (wasEditing) {
-      // Do NOT yank the user out of the photo they are working on. Imports
-      // finish minutes later; jumping the view is the kind of "helpful" that
-      // loses someone's place.
-      toast(`${name} queued`);
-    } else {
-      toast(`${name} queued`);
-    }
+    // Never jump the view to the new photo: imports finish minutes later, and
+    // yanking someone out of the picture they are working on is the kind of
+    // "helpful" that loses their place. A toast is the whole feedback.
+    toast(`${name} queued`);
   } catch (e) {
-    tile.remove();
     renderLibrary();
     toast(`Could not process ${name}: ${e}`, true);
   } finally {

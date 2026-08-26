@@ -32,6 +32,25 @@ jobs:
           sys.exit(1 if fail else 0)
           EOF
 
+      # A pending photo must have exactly ONE source of truth. It briefly had
+      # two -- a browser-side placeholder AND the server's /api/gallery entry --
+      # and because renderLibrary() also carried old `.tile.pending` nodes
+      # across renders, four queued photos grew by four more every 4s poll.
+      # Parsing and the route smoke test both pass happily through that.
+      - name: One source of truth for pending tiles
+        run: |
+          python3 - <<'EOF'
+          import pathlib, sys
+          js = pathlib.Path("service/static/index.html").read_text()
+          n = js.count("'tile pending'")
+          carry = "querySelectorAll('.tile.pending')" in js
+          print(f"places creating a pending tile: {n}; carries tiles across renders: {carry}")
+          if n != 1 or carry:
+              print("FAIL: pending tiles must be created in exactly one place, "
+                    "from state.imports only, and never preserved across renders.")
+              sys.exit(1)
+          EOF
+
       # Parsing is not enough. Twice a string edit added an argument to a
       # call site whose function had no such parameter -- the module imported
       # cleanly and only blew up on a real request, once shipping a broken
