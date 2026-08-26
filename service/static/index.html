@@ -30,14 +30,20 @@
     font-size: 16px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
-    padding-bottom: env(safe-area-inset-bottom);
+    /* dvh, not vh: on iOS Safari `vh` is the height WITHOUT browser chrome,
+       so a 100vh layout sits partly under the address bar. dvh tracks the
+       chrome as it hides and shows. */
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;          /* the app frame is fixed; panes scroll */
   }
   button { font: inherit; color: inherit; cursor: pointer; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 
   /* ---------- header ---------- */
   header {
-    position: sticky; top: 0; z-index: 20;
+    flex: none; z-index: 20;
     display: flex; align-items: center; gap: .75rem;
     padding: .7rem 1rem;
     background: color-mix(in srgb, var(--bg) 88%, transparent);
@@ -70,7 +76,15 @@
   .confirm-pop .actions { display: flex; gap: .5rem; justify-content: flex-end; }
   .btn.destructive { background: var(--danger); color: #1A0E0E; }
 
-  main { max-width: 1100px; margin-inline: auto; padding: 1rem; }
+  main {
+    flex: 1; min-height: 0;                 /* min-height:0 or flex children refuse to shrink */
+    padding: 1rem;
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+  /* The library is a reading surface, so it stays measured and scrolls.
+     The editor is a working surface and takes the whole frame. */
+  #view-library { max-width: 1400px; margin-inline: auto; overflow-y: auto; width: 100%; }
+  #view-editor  { overflow: hidden; display: flex; flex-direction: column; }
   [hidden] { display: none !important; }
 
   /* ---------- toast ---------- */
@@ -214,15 +228,28 @@
      and the slider that changes it is the thing that made the old gallery
      feel like a form rather than an editor. */
   @media (min-width: 900px) {
-    #view-editor { display: grid; grid-template-columns: minmax(0, 1fr) 340px;
-                   gap: 1.5rem; align-items: start; }
-    .hero-wrap { position: sticky; top: 4.6rem; }
-    .rail { min-width: 0; }
+    #view-editor {
+      display: grid; grid-template-columns: minmax(0, 1fr) 360px;
+      gap: 1.5rem; align-items: stretch; height: 100%; min-height: 0;
+    }
+    .hero-wrap { height: 100%; min-height: 0; }
+    .hero-wrap img { max-height: 100%; height: 100%; }
+    /* Only the controls scroll. The photo stays put, which is the whole
+       point of a full-frame editor. */
+    .rail { min-width: 0; overflow-y: auto; height: 100%;
+            padding-right: .35rem; overscroll-behavior: contain; }
     .rail .panel:first-child { margin-top: 0; }
-    .dl-bar { position: static; background: none; padding-bottom: 0; }
+    .dl-bar { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 30%); }
   }
+  /* Phone: the photo takes whatever height is left after the controls, and
+     the controls scroll under it. No page scroll, so the download button is
+     always reachable. */
   @media (max-width: 899px) {
-    .hero-wrap img { max-height: 46vh; }
+    #view-editor { gap: .6rem; }
+    .hero-wrap { flex: 0 0 auto; max-height: 42dvh; }
+    .hero-wrap img { max-height: 42dvh; }
+    .rail { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch; }
   }
 
   .panel { margin-top: 1rem; }
