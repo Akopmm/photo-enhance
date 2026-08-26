@@ -52,7 +52,16 @@ OVERLAP = 64
 # auto | cpu | gpu. "auto" uses the Intel iGPU through OpenVINO when a driver
 # is actually present, and falls back silently otherwise -- the container runs
 # unchanged on a box with no GPU.
-DENOISE_DEVICE = os.environ.get("DENOISE_DEVICE", "auto")
+def _configured_device() -> str:
+    """Env wins (it is how the container is pinned), otherwise the setting."""
+    env = os.environ.get("DENOISE_DEVICE")
+    if env:
+        return env
+    try:
+        import settings
+        return (settings.get("denoise_device") or "auto").lower()
+    except Exception:  # noqa: BLE001
+        return "auto"
 
 
 def _device():
@@ -67,7 +76,8 @@ def _openvino_tile_model():
     the GPU plugin worth using. Measured on optiplex: 9.75s -> 3.86s per
     tile, 2.52x.
     """
-    if DENOISE_DEVICE == "cpu":
+    if _configured_device() == "cpu":
+        logger.info("denoise: pinned to CPU by configuration")
         return None
     if "ov" in _cache:
         return _cache["ov"]

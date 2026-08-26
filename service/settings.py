@@ -47,6 +47,12 @@ DEFAULTS = {
     "denoise_mode": "auto",
     "denoise_threshold": 3.0,
     "denoise_amount": 0.9,
+    # auto | cpu | gpu. The iGPU is 2.52x faster on the denoiser, but the
+    # Intel driver and OpenVINO plugin map ~680 MB into the process that is
+    # never released, and the compiled model holds ~2.8 GB while resident
+    # against a few hundred MB on CPU. Measured on optiplex; the trade is
+    # real enough to be a setting rather than a decision made for you.
+    "denoise_device": "auto",
     "cinematic_presets": True,
     "max_concurrent_jobs": int(os.environ.get("MAX_CONCURRENT_JOBS", "3")),
     "idle_unload_minutes": float(os.environ.get("IDLE_UNLOAD_MINUTES", "15")),
@@ -67,6 +73,7 @@ EDITABLE = {
     "denoise_mode": str,
     "denoise_threshold": float,
     "denoise_amount": float,
+    "denoise_device": str,
     "cinematic_presets": bool,
     "max_concurrent_jobs": int,
     "idle_unload_minutes": float,

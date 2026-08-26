@@ -67,6 +67,8 @@ def main() -> int:
         ("GET", f"/api/gallery/{imp}/punch_preview.jpg",
          {"strength": "0.40", "denoise": "0.75"}),
         ("GET", f"/api/gallery/{imp}/punch_thumb.jpg", {"strength": "0.60"}),
+        ("GET", f"/api/gallery/{imp}/motion_wiggle.gif", None),
+        ("GET", f"/api/gallery/{imp}/motion_turn.gif", None),
         # the download job, with every parameter the editor can attach
         ("POST", "/api/render", {"import_id": imp, "style_key": "punch"}),
         ("POST", "/api/render", {"import_id": imp, "style_key": "punch",

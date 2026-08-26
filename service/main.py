@@ -1,4 +1,5 @@
 import logging
+import os
 
 import asyncio
 import time
@@ -343,6 +344,24 @@ async def styles_catalogue(user: str = Depends(current_user)):
         out.append({"key": key, "label": label,
                     "group": "cinematic" if key in cine else "signature"})
     return JSONResponse(out)
+
+
+@app.get("/api/gallery/{import_id}/motion_{mode}.gif")
+async def gallery_wiggle(import_id: str, mode: str, user: str = Depends(current_user)):
+    """The 3D GIF. Cheap enough to serve directly rather than as a job --
+    no model runs, it is arithmetic over two files already on disk."""
+    _owned(import_id, user)
+    if mode not in ("wiggle", "turn"):
+        raise HTTPException(404, "unknown motion")
+    cached = storage.motion_path(import_id, mode)
+    if os.path.exists(cached):
+        return FileResponse(cached, media_type="image/gif")
+    try:
+        data = await pipeline.render_wiggle_gif(import_id, mode)
+    except (FileNotFoundError, KeyError) as e:
+        raise HTTPException(404, str(e))
+    storage.save_motion(import_id, mode, data)
+    return Response(content=data, media_type="image/gif")
 
 
 @app.get("/api/gallery/{import_id}/{style_key}_preview.jpg")

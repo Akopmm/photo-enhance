@@ -194,6 +194,15 @@ def save_denoise_info(import_id: str, info: dict):
     _write_meta(import_id, meta)
 
 
+def save_motion(import_id: str, mode: str, data: bytes):
+    with open(os.path.join(_import_dir(import_id), f"motion_{mode}.gif"), "wb") as f:
+        f.write(data)
+
+
+def motion_path(import_id: str, mode: str) -> str:
+    return os.path.join(_import_dir(import_id), f"motion_{mode}.gif")
+
+
 def save_scene(import_id: str, scene: dict, recipes: list):
     """`recipes` is the list of region-recipe keys that were actually offered
     for this import. Persisting it is what stops the download path from

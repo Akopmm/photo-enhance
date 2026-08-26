@@ -27,15 +27,25 @@ than inventing a confident-looking suggestion.
 """
 import numpy as np
 
-# (key, label, width/height). Portrait 4:5 and 1:1 are the social formats;
-# 2.39:1 is the cinema letterbox; 16:9 for screens; 3:2 matches the native
-# aspect of most of these cameras.
+# (key, label, width/height, group). 2.39:1 is the cinema letterbox, 16:9 for
+# screens, 3:2 the native aspect of most of these cameras.
+#
+# The Instagram group is what the app actually accepts, which is not the same
+# as "some square and portrait ratios":
+#   Stories / Reels  9:16  -- full-bleed vertical, anything wider gets pillarboxed
+#   Portrait post    4:5   -- the tallest a feed post may be; taller is cropped
+#   Square post      1:1   -- the classic feed crop
+#   Landscape post   1.91:1 -- the widest a feed post may be; wider is cropped
+# Getting these exact matters: post something outside the range and Instagram
+# crops it for you, usually through someone's head.
 ASPECTS = [
-    ("square", "Square 1:1", 1.0),
-    ("portrait_45", "Portrait 4:5", 4 / 5),
-    ("classic_32", "Classic 3:2", 3 / 2),
-    ("wide_169", "Wide 16:9", 16 / 9),
-    ("cine_239", "Cinematic 2.39:1", 2.39),
+    ("ig_story", "Instagram Story 9:16", 9 / 16, "instagram"),
+    ("ig_portrait", "Instagram Portrait 4:5", 4 / 5, "instagram"),
+    ("ig_square", "Instagram Square 1:1", 1.0, "instagram"),
+    ("ig_landscape", "Instagram Landscape 1.91:1", 1.91, "instagram"),
+    ("classic_32", "Classic 3:2", 3 / 2, "classic"),
+    ("wide_169", "Wide 16:9", 16 / 9, "classic"),
+    ("cine_239", "Cinematic 2.39:1", 2.39, "classic"),
 ]
 
 THIRDS = (1 / 3, 2 / 3)
@@ -151,7 +161,7 @@ def suggest_crops(img_w: int, img_h: int, mask: np.ndarray | None):
     cx, cy = centroid if has_subject else (0.5, 0.5)
 
     out = []
-    for key, label, aspect in ASPECTS:
+    for key, label, aspect, group in ASPECTS:
         # Scale the subject box to mask coordinates -> image coordinates if
         # they differ (mask is computed on the preview).
         box = subject
@@ -186,6 +196,7 @@ def suggest_crops(img_w: int, img_h: int, mask: np.ndarray | None):
         crop.update({
             "key": key,
             "label": label,
+            "group": group,
             "has_subject": has_subject,
             "kept_fraction": round(area_ratio, 3),
             "subject_coverage": round(coverage, 3),

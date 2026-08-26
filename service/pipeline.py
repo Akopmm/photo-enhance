@@ -666,6 +666,27 @@ async def render_preview_at_strength(import_id: str, style_key: str, strength: f
     return await asyncio.to_thread(_render)
 
 
+async def render_wiggle_gif(import_id: str, mode: str = "wiggle", progress=None) -> bytes:
+    """3D parallax GIF. Needs no model and no RAW decode: the depth map is
+    already stored for the depth looks, and the baseline for the editor hero.
+    Cached per mode like any other render."""
+    import wiggle
+    if not storage.has_baseline_thumb(import_id):
+        raise FileNotFoundError("this import predates stored baselines")
+    stored = await asyncio.to_thread(_load_masks, import_id)
+    if "depth" not in stored:
+        raise KeyError("no depth map for this photo -- it was imported with "
+                       "depth masking off, or the scene was too flat")
+
+    def _render():
+        img = Image.open(storage.baseline_thumb_path(import_id)).convert("RGB")
+        base = np.asarray(img).astype(np.float32) / 255.0
+        return wiggle.render(base, stored["depth"], mode=mode,
+                             subject=stored.get("subject"), progress=progress)
+
+    return await asyncio.to_thread(_render)
+
+
 async def _get_original_bytes(import_id: str) -> tuple[bytes, str]:
     meta = storage.get_import(import_id)
     if meta["source_type"] == "upload":
