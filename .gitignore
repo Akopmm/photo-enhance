@@ -17,3 +17,10 @@ experiments/
 # SCUNet denoise weights (72MB) are fetched at image build time by the
 # Dockerfile and checksum-verified there; they are not committed.
 service/weights/scunet_color_real_psnr.pth
+
+# Family photos and anything derived from them stay out of the repo -- this
+# may become public, and the demo material should be the bird, not a child.
+before-after/baby_*
+experiments/out/denoise_*
+experiments/out/cr3_vs_*
+experiments/out/noisy_source.jpg
