@@ -40,7 +40,7 @@ The LUT model applies **one** colour mapping to every pixel, so it structurally 
 | Mask | Model | Notes |
 |---|---|---|
 | Subject | [BiRefNet-lite](https://github.com/zhengpeng7/birefnet), 44M params, MIT | Crisp cutouts; the "Select Subject" equivalent |
-| Sky / scene | SegFormer-B0 / ADE20K | Coarse but fine for sky, which is graded softly anyway. Also reports what else is in the frame, which gates the other recipes |
+| Sky / scene | [UPerNet / ConvNeXt-tiny](https://huggingface.co/openmmlab/upernet-convnext-tiny), 60.2M params, MIT | ADE20K's 150 classes: the sky mask, the foliage union (tree ∪ grass ∪ plant), and the scene inventory that decides which looks are offered at all |
 | Depth | [Depth Anything V2 Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf), 24.8M params, Apache-2.0 | Lightroom's Depth Range Mask. Grades by distance, so it still works where subject segmentation finds nothing |
 
 **Every model is permissive** (Apache-2.0 or MIT) as of 2026-08-26. SegFormer-B0 was replaced by
@@ -84,11 +84,47 @@ Built on the same subject mask, so it's arithmetic rather than guesswork: the su
 
 Deliberately rules, not a learned aesthetics model — that would be another ~100MB and seconds per photo to land in roughly the same place for the common single-subject case. With no clear subject it falls back to a centred crop and says so.
 
+### The editor
+
+Two screens: a **Library** of your photos, and an **Editor** you open one into. On a wide screen the
+photo sits left and every control right, so you never scroll between the image and the thing that
+changes it.
+
+- **Looks** are a filmstrip grouped into *For this photo* (the region-aware ones, which depend on
+  what the segmenters found), *Signature* and *Cinematic* — rather than one wall of 24 thumbnails.
+- **Strength** and **Denoise** are sliders that re-render the large preview as you drag them. Both
+  are arithmetic over things already computed, so they respond in tens of milliseconds with no model
+  run: strength blends toward the ungraded baseline, and denoise blends between the two stored
+  baselines (untouched and fully denoised).
+- **Crop** is drawn *on* the photo — dimmed surround, thirds guides, corner handles. Drag inside to
+  reposition, drag a corner to resize; that detaches from the preset and sends an explicit rectangle.
+- Press and hold the image to compare against the original.
+
 ### Preview-first rendering
 
-Decode and model inference run once at full resolution on import — both are cheap at any size, since the weight-predictor CNN downsamples to 256×256 internally and the LUT is a pointwise op. The genuinely expensive part (the box-blur-based preset effects) only runs at full resolution for a style you actually **download**, and is cached afterwards.
+Decode and model inference run once at full resolution on import — both are cheap at any size, since
+the weight-predictor CNN downsamples to 256×256 internally and the LUT is a pointwise op. Masks are
+computed once at 1024 px and persisted; the baseline is stored at 1280 px so the editor's large
+preview can be re-rendered from it at any look and strength and still be sharp.
 
-Import is a few seconds; the first full-res download of a style takes a few more, then it's instant. The gallery also shows the original, uncorrected photo for comparison.
+Full-resolution renders happen only for what you actually **download**, run as a job with real
+progress (`fetching → decoding → colour model → removing noise → applying the look → cropping →
+saving`), and are cached by every parameter that affects the result. Deleting a photo cancels any
+render still working on it.
+
+### Output size and crops
+
+Downloads can be **Original**, or ~5 / ~3 / ~1 MB. The resize happens straight after the colour
+model, so denoise, styling and cropping all run smaller — on a 26 MP frame that is 140 denoise tiles
+against 48. Sizes are labelled in MB and the encoder steps quality down until it fits, because a
+denoised frame compresses far better than a noisy one.
+
+Cropping likewise happens **before** the expensive stages rather than on the finished JPEG, which
+also removes a second round of JPEG compression on every cropped download.
+
+Crop presets lead with the ratios Instagram actually accepts — post outside this range and it
+re-crops for you: **Story/Reel 9:16**, **Portrait 4:5** (the tallest allowed), **Square 1:1**,
+**Landscape 1.91:1** (the widest allowed) — followed by 3:2, 16:9 and 2.39:1.
 
 ### Users
 
@@ -103,10 +139,11 @@ Each user holds **their own** Immich URL and API key, so imports read from their
 | | classic | enhanced |
 |---|---|---|
 | Colour correction + 18 style presets | ✓ | ✓ |
-| Subject / sky / depth region grading | — | ✓ |
+| Subject / sky / foliage / depth region grading | — | ✓ |
 | Crop suggestions | — | ✓ |
-| Extra RAM while processing | none | ~1.25 GB |
-| Time per photo (6-core i5-10500T) | ~5 s | ~17 s |
+| Denoise (when the photo needs it) | — | ✓ |
+| Import time, 26 MP CR3 (6-core i5-10500T) | ~5 s | ~15 s clean, ~87 s if denoised |
+| Container peak while importing | ~1 GB | ~2.5 GB, ~4.5 GB if denoised |
 
 Switch in **Settings**. Defaults to `classic`.
 
@@ -197,6 +234,33 @@ Two things worth knowing if you train:
 
 ---
 
+## Models and licences
+
+| stage | model | params | licence | device |
+|---|---|---|---|---|
+| Colour | Image-Adaptive-3DLUT | 593 K | Apache-2.0 | CPU |
+| Denoise | SCUNet (real-noise) | 17.9 M | Apache-2.0 | iGPU, falls back to CPU |
+| Subject | BiRefNet-lite | 44 M | MIT | CPU |
+| Scene / sky | UPerNet ConvNeXt-T | 60.2 M | MIT | CPU |
+| Depth | Depth Anything V2 Small | 24.8 M | Apache-2.0 | CPU |
+
+All permissive. SegFormer was used for scene segmentation until its NVIDIA licence — *"research or
+evaluation purposes only"* — made it unsuitable; UPerNet replaced it and produced a **better** sky
+mask in the comparison.
+
+Only the denoiser uses the integrated GPU, because it is the only model with no internal
+downsampling and therefore the only one genuinely compute-bound (2.52× on an Intel UHD 630). It costs
+~680 MB of Intel driver mapped permanently into the process, so `denoise_device` can be set to `cpu`
+if you would rather have the memory. Gen9.5 hardware needs Intel's *legacy* 24.35 driver line; the
+Dockerfile pins it.
+
+⚠️ **One caveat if you intend to use this commercially.** The shipped 3D-LUT weights were trained on
+**MIT-Adobe FiveK**, whose dataset terms are research-oriented, and BiRefNet's *weights* card declares
+no licence even though its code repository is MIT. Both are fine for personal use; neither is legal
+advice.
+
 ## License
 
-Apache-2.0 (see `LICENSE`), matching the original Image-Adaptive-3DLUT repository this project's architecture and shipped weights come from.
+Apache-2.0 (see `LICENSE`), matching the original Image-Adaptive-3DLUT repository this project's
+architecture and shipped weights come from. Vendored third-party code carries its own notice — see
+`service/vendor/NOTICE` for SCUNet.
