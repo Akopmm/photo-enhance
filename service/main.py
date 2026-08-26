@@ -1,5 +1,8 @@
 import logging
 
+import asyncio
+import time
+import uuid
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -322,6 +325,35 @@ async def gallery_thumb(import_id: str, style_key: str, strength: float = 1.0,
     return FileResponse(storage.thumb_path(import_id, style_key), media_type="image/jpeg")
 
 
+@app.get("/api/styles")
+async def styles_catalogue(user: str = Depends(current_user)):
+    """Which looks exist and how they group. The editor shows one group at a
+    time -- 24 thumbnails at once is a wall, and the groups mean something:
+    `smart` looks are computed for THIS photo's content, the rest are fixed."""
+    from cinematic import CINEMATIC
+    from presets import PRESETS
+    cine = {k for k, _l, _p in CINEMATIC}
+    out = []
+    for key, label, _params in pipeline._style_list():
+        out.append({"key": key, "label": label,
+                    "group": "cinematic" if key in cine else "signature"})
+    return JSONResponse(out)
+
+
+@app.get("/api/gallery/{import_id}/{style_key}_preview.jpg")
+async def gallery_preview(import_id: str, style_key: str, strength: float = 1.0,
+                          user: str = Depends(current_user)):
+    """Big editor preview: always rendered live from the stored baseline, so
+    it reflects the current look AND strength immediately. Falls back to the
+    small stored thumbnail for imports made before baselines were kept."""
+    _owned(import_id, user)
+    data = await pipeline.render_preview_at_strength(import_id, style_key, strength)
+    if data is not None:
+        return Response(content=data, media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
+    return FileResponse(storage.thumb_path(import_id, style_key), media_type="image/jpeg")
+
+
 @app.get("/api/gallery/{import_id}/{style_key}.jpg")
 async def gallery_render_full(import_id: str, style_key: str, crop: str | None = None,
                               strength: float = 1.0,
@@ -335,6 +367,70 @@ async def gallery_render_full(import_id: str, style_key: str, crop: str | None =
     except Exception as e:
         raise HTTPException(502, f"could not render full-resolution image: {e}")
     return FileResponse(path, media_type="image/jpeg")
+
+
+# ---- render jobs ----
+#
+# A full-resolution render takes ~12s, and a plain blocking GET can report
+# nothing while it happens -- the UI could only spin. These endpoints start
+# the work and let the page poll for real stages. Jobs live in memory: this
+# is a single-process service and a lost job on restart just means clicking
+# download again, which is cheaper than persisting them.
+_render_jobs: dict[str, dict] = {}
+_RENDER_JOB_TTL = 900
+
+
+def _reap_jobs():
+    now = time.time()
+    for jid in [j for j, v in _render_jobs.items() if now - v["updated"] > _RENDER_JOB_TTL]:
+        _render_jobs.pop(jid, None)
+
+
+@app.post("/api/render")
+async def render_start(import_id: str = Form(...), style_key: str = Form(...),
+                       crop: str | None = Form(None), strength: float = Form(1.0),
+                       user: str = Depends(current_user)):
+    _owned(import_id, user)
+    _reap_jobs()
+    job_id = uuid.uuid4().hex
+    job = {"state": "queued", "pct": 0, "message": "Starting", "owner": user,
+           "updated": time.time(), "url": None, "error": None}
+    _render_jobs[job_id] = job
+
+    def on_progress(pct, message):
+        job.update(pct=pct, message=message, state="running", updated=time.time())
+
+    async def run():
+        try:
+            await pipeline.render_full_style(import_id, style_key, crop_key=crop,
+                                             strength=strength, progress=on_progress)
+            job.update(state="done", pct=100, message="Ready", updated=time.time(),
+                       url=f"/api/gallery/{import_id}/{style_key}.jpg"
+                           + _render_query(crop, strength))
+        except (FileNotFoundError, KeyError) as e:
+            job.update(state="error", error=f"unknown import or style: {e}", updated=time.time())
+        except Exception as e:  # noqa: BLE001
+            job.update(state="error", error=str(e), updated=time.time())
+
+    asyncio.create_task(run())
+    return JSONResponse({"job_id": job_id})
+
+
+def _render_query(crop, strength):
+    params = []
+    if crop:
+        params.append(f"crop={crop}")
+    if strength is not None and strength < 1.0:
+        params.append(f"strength={strength:.2f}")
+    return ("?" + "&".join(params)) if params else ""
+
+
+@app.get("/api/render/{job_id}")
+async def render_status(job_id: str, user: str = Depends(current_user)):
+    job = _render_jobs.get(job_id)
+    if not job or job["owner"] != user:
+        raise HTTPException(404, "unknown job")
+    return JSONResponse({k: job[k] for k in ("state", "pct", "message", "url", "error")})
 
 
 @app.delete("/api/gallery/{import_id}")

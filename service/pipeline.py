@@ -89,6 +89,14 @@ def _thumb_edge() -> int:
     return int(settings.get("thumb_long_edge") or 480)
 
 
+# The editor shows one big preview, and 480px upscaled to a full-width hero
+# looks soft. The stored baseline is kept larger than the filmstrip
+# thumbnails so the hero can be re-rendered from it at any look/strength and
+# still be sharp. ~250KB per import, and rendering a look over it is well
+# under the time it takes to drag a slider.
+HERO_EDGE = 1280
+
+
 def _decode_full(raw_bytes: bytes, filename: str, no_auto_bright: bool = True,
                  half_size: bool = False) -> np.ndarray:
     """(H, W, 3) float32 in [0,1] at native resolution.
@@ -392,8 +400,10 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
         orig_bytes = await asyncio.to_thread(_tensor_to_jpeg_bytes, small_normal, THUMB_QUALITY)
         await asyncio.to_thread(storage.save_original_thumb, import_id, orig_bytes)
 
+        hero_baseline = await asyncio.to_thread(_resize_tensor, baseline, HERO_EDGE)
         baseline_bytes = await asyncio.to_thread(
-            _tensor_to_jpeg_bytes, small_baseline, THUMB_QUALITY)
+            _tensor_to_jpeg_bytes, hero_baseline, THUMB_QUALITY)
+        hero_baseline = None
         await asyncio.to_thread(storage.save_baseline_thumb, import_id, baseline_bytes)
 
         # Global styles (both modes)
@@ -457,20 +467,30 @@ async def render_preview_at_strength(import_id: str, style_key: str, strength: f
     """
     if not storage.has_baseline_thumb(import_id):
         return None
-    stored = await asyncio.to_thread(_load_masks, import_id)
-    if not stored:
-        return None
     meta = storage.get_import(import_id) or {}
+    global_styles = {k: p for k, _l, p in _style_list()}
+    stored = None
+    if style_key not in global_styles:
+        stored = await asyncio.to_thread(_load_masks, import_id)
+        if not stored:
+            return None
 
     def _render():
         img = Image.open(storage.baseline_thumb_path(import_id)).convert("RGB")
         base = np.asarray(img).astype(np.float32) / 255.0
-        h, w = base.shape[:2]
-        masks = _prepare_masks(stored, (w, h), only=_RECIPE_MASKS.get(style_key))
-        recipe = next((r for k, _l, r in _region_recipes(masks, meta.get("scene", {}))
-                       if k == style_key), None)
-        if recipe is None:
-            return None
+        if style_key in global_styles:
+            # A global style is just a recipe with one whole-frame layer, so
+            # region_grade's strength blending covers it too -- which is why
+            # the slider can apply to every look instead of appearing only
+            # for the region ones.
+            recipe = [(None, global_styles[style_key])]
+        else:
+            h, w = base.shape[:2]
+            masks = _prepare_masks(stored, (w, h), only=_RECIPE_MASKS.get(style_key))
+            recipe = next((r for k, _l, r in _region_recipes(masks, meta.get("scene", {}))
+                           if k == style_key), None)
+            if recipe is None:
+                return None
         out = rg.region_grade(base, recipe, min(max(strength, 0.0), 1.0))
         return _array_to_jpeg_bytes(out, THUMB_QUALITY)
 
@@ -487,7 +507,7 @@ async def _get_original_bytes(import_id: str) -> tuple[bytes, str]:
 
 
 async def render_full_style(import_id: str, style_key: str, crop_key: str | None = None,
-                            strength: float = 1.0) -> str:
+                            strength: float = 1.0, progress=None) -> str:
     """Full-resolution render of one style, on first request, then cached.
 
     `crop_key` optionally applies one of the stored composition suggestions.
@@ -495,27 +515,45 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
     ungraded image; it is part of the cache key, so each setting is rendered
     once and then reused.
     """
+    # `progress(pct, message)` reports real stages rather than a spinner --
+    # a full-resolution render is ~12s and silence for that long reads as a
+    # hang. Stages are coarse but each one is a genuine boundary in the work.
+    def _say(pct, msg):
+        if progress:
+            progress(pct, msg)
+
     strength = min(max(float(strength), 0.0), 1.0)
     cache_key = style_key if not crop_key else f"{style_key}__{crop_key}"
     if strength < 1.0:
         cache_key = f"{cache_key}__s{round(strength * 100):03d}"
     if storage.full_render_exists(import_id, cache_key):
+        _say(100, "Ready")
         return storage.full_render_path(import_id, cache_key)
 
     global_styles = {k: p for k, _l, p in _style_list()}
 
+    _say(3, "Waiting for a slot")
     async with _render_gate, _pipeline_gate:
         if storage.full_render_exists(import_id, cache_key):
+            _say(100, "Ready")
             return storage.full_render_path(import_id, cache_key)
 
+        _say(10, "Fetching the original")
         raw_bytes, filename = await _get_original_bytes(import_id)
+        _say(25, "Decoding the RAW")
         arr = await asyncio.to_thread(_decode_full, raw_bytes, filename)
         tensor = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).contiguous()
+        _say(45, "Colour model")
         baseline = await runtime.infer(tensor)
         arr = tensor = None
 
+        _say(60, "Applying the look")
         if style_key in global_styles:
             styled = await runtime.render_style(baseline, global_styles[style_key])
+            if strength < 1.0:
+                # Blend back toward the uncorrected baseline, matching what
+                # the preview showed at this strength.
+                styled = baseline + (styled - baseline) * strength
             jpeg = await asyncio.to_thread(_tensor_to_jpeg_bytes, styled, _jpeg_quality())
         else:
             # Region recipe. The masks are NOT recomputed here: they are
@@ -536,6 +574,7 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
             jpeg = await asyncio.to_thread(_array_to_jpeg_bytes, out, _jpeg_quality())
 
         if crop_key:
+            _say(88, "Cropping")
             meta = storage.get_import(import_id) or {}
             crop = next((c for c in meta.get("crops", []) if c["key"] == crop_key), None)
             if crop is None:
@@ -546,8 +585,10 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
             jpeg = await asyncio.to_thread(
                 _array_to_jpeg_bytes, cropping.apply_crop(full, crop), _jpeg_quality())
 
+        _say(94, "Saving")
         await asyncio.to_thread(storage.save_full_render, import_id, cache_key, jpeg)
 
     await asyncio.to_thread(return_arenas_to_os)
+    _say(100, "Ready")
     logger.info("full render: %s / %s", import_id, cache_key)
     return storage.full_render_path(import_id, cache_key)
