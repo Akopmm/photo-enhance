@@ -354,7 +354,7 @@ async def gallery_preview(import_id: str, style_key: str, strength: float = 1.0,
     small stored thumbnail for imports made before baselines were kept."""
     _owned(import_id, user)
     data = await pipeline.render_preview_at_strength(import_id, style_key, strength,
-                                                    denoise_amount=denoise, size=size)
+                                                    denoise_amount=denoise)
     if data is not None:
         return Response(content=data, media_type="image/jpeg",
                         headers={"Cache-Control": "no-store"})
