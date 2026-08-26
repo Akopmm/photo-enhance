@@ -356,12 +356,12 @@ async def gallery_preview(import_id: str, style_key: str, strength: float = 1.0,
 
 @app.get("/api/gallery/{import_id}/{style_key}.jpg")
 async def gallery_render_full(import_id: str, style_key: str, crop: str | None = None,
-                              strength: float = 1.0,
+                              strength: float = 1.0, crop_rect: str | None = None,
                               user: str = Depends(current_user)):
     _owned(import_id, user)
     try:
         path = await pipeline.render_full_style(import_id, style_key, crop_key=crop,
-                                                strength=strength)
+                                                strength=strength, crop_rect=crop_rect)
     except (FileNotFoundError, KeyError):
         raise HTTPException(404, "unknown import or style")
     except Exception as e:
@@ -389,6 +389,7 @@ def _reap_jobs():
 @app.post("/api/render")
 async def render_start(import_id: str = Form(...), style_key: str = Form(...),
                        crop: str | None = Form(None), strength: float = Form(1.0),
+                       crop_rect: str | None = Form(None),
                        user: str = Depends(current_user)):
     _owned(import_id, user)
     _reap_jobs()
@@ -403,10 +404,11 @@ async def render_start(import_id: str = Form(...), style_key: str = Form(...),
     async def run():
         try:
             await pipeline.render_full_style(import_id, style_key, crop_key=crop,
-                                             strength=strength, progress=on_progress)
+                                             strength=strength, progress=on_progress,
+                                             crop_rect=crop_rect)
             job.update(state="done", pct=100, message="Ready", updated=time.time(),
                        url=f"/api/gallery/{import_id}/{style_key}.jpg"
-                           + _render_query(crop, strength))
+                           + _render_query(crop, strength, crop_rect))
         except (FileNotFoundError, KeyError) as e:
             job.update(state="error", error=f"unknown import or style: {e}", updated=time.time())
         except Exception as e:  # noqa: BLE001
@@ -416,9 +418,11 @@ async def render_start(import_id: str = Form(...), style_key: str = Form(...),
     return JSONResponse({"job_id": job_id})
 
 
-def _render_query(crop, strength):
+def _render_query(crop, strength, crop_rect=None):
     params = []
-    if crop:
+    if crop_rect:
+        params.append(f"crop_rect={crop_rect}")
+    elif crop:
         params.append(f"crop={crop}")
     if strength is not None and strength < 1.0:
         params.append(f"strength={strength:.2f}")

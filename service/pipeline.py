@@ -506,8 +506,24 @@ async def _get_original_bytes(import_id: str) -> tuple[bytes, str]:
     return data, meta["source_name"] or name
 
 
+def _parse_crop_rect(spec: str | None) -> dict | None:
+    """`x,y,w,h` as fractions of the frame -> a crop dict in full-image
+    pixels at render time. Lets the editor send a rectangle the user dragged
+    instead of only one of the suggested presets."""
+    if not spec:
+        return None
+    try:
+        x, y, w, h = (float(v) for v in spec.split(","))
+    except (ValueError, AttributeError):
+        raise KeyError(f"bad crop_rect {spec!r}")
+    x, y = min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0)
+    w, h = min(max(w, 0.01), 1.0 - x), min(max(h, 0.01), 1.0 - y)
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
 async def render_full_style(import_id: str, style_key: str, crop_key: str | None = None,
-                            strength: float = 1.0, progress=None) -> str:
+                            strength: float = 1.0, progress=None,
+                            crop_rect: str | None = None) -> str:
     """Full-resolution render of one style, on first request, then cached.
 
     `crop_key` optionally applies one of the stored composition suggestions.
@@ -523,7 +539,15 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
             progress(pct, msg)
 
     strength = min(max(float(strength), 0.0), 1.0)
-    cache_key = style_key if not crop_key else f"{style_key}__{crop_key}"
+    rect = _parse_crop_rect(crop_rect)
+    if rect:
+        # A dragged rectangle gets its own cache entry, keyed by the numbers
+        # so re-downloading the same framing is instant.
+        tag = "r" + "_".join(f"{rect[k]:.4f}".replace("0.", "") for k in ("x", "y", "w", "h"))
+        cache_key = f"{style_key}__{tag}"
+        crop_key = None
+    else:
+        cache_key = style_key if not crop_key else f"{style_key}__{crop_key}"
     if strength < 1.0:
         cache_key = f"{cache_key}__s{round(strength * 100):03d}"
     if storage.full_render_exists(import_id, cache_key):
@@ -573,7 +597,15 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
             out = await asyncio.to_thread(rg.region_grade, base_arr, recipe, strength)
             jpeg = await asyncio.to_thread(_array_to_jpeg_bytes, out, _jpeg_quality())
 
-        if crop_key:
+        if rect:
+            _say(88, "Cropping")
+            full = np.asarray(Image.open(io.BytesIO(jpeg)).convert("RGB"))
+            fh, fw = full.shape[:2]
+            px = dict(x=rect["x"] * fw, y=rect["y"] * fh,
+                      w=rect["w"] * fw, h=rect["h"] * fh)
+            jpeg = await asyncio.to_thread(
+                _array_to_jpeg_bytes, cropping.apply_crop(full, px), _jpeg_quality())
+        elif crop_key:
             _say(88, "Cropping")
             meta = storage.get_import(import_id) or {}
             crop = next((c for c in meta.get("crops", []) if c["key"] == crop_key), None)

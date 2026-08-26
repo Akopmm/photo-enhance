@@ -54,6 +54,21 @@
     display: inline-flex; align-items: center; justify-content: center;
   }
   .icon-btn:hover { background: var(--line); }
+  .icon-btn.danger { border-color: var(--danger); color: var(--danger); }
+  /* A confirmation must not move or time out under the pointer. The first
+     attempt reshaped the button in place and auto-disarmed after 5s, so the
+     second click could land on empty space -- caught in testing, where the
+     delete silently did nothing. */
+  .confirm-pop {
+    position: absolute; top: calc(100% + .5rem); right: 1rem; z-index: 30;
+    background: var(--surface); border: 1px solid var(--danger);
+    border-radius: 12px; padding: .9rem; width: min(320px, calc(100vw - 2rem));
+    box-shadow: 0 12px 32px #000A;
+  }
+  .confirm-pop p { margin: 0 0 .8rem; font-size: .87rem; color: var(--text); }
+  .confirm-pop .sub { color: var(--text-dim); font-size: .8rem; }
+  .confirm-pop .actions { display: flex; gap: .5rem; justify-content: flex-end; }
+  .btn.destructive { background: var(--danger); color: #1A0E0E; }
 
   main { max-width: 1100px; margin-inline: auto; padding: 1rem; }
   [hidden] { display: none !important; }
@@ -160,6 +175,31 @@
     animation: sweep 1s linear infinite;
   }
   @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+  /* Crop overlay: the frame is drawn ON the photo, because picking a crop
+     from a chip and seeing nothing change is the same complaint as the
+     strength slider had. Drag inside to reposition, drag a corner to resize;
+     the aspect ratio of the chosen preset is preserved. */
+  .crop-layer { position: absolute; inset: 0; grid-area: 1/1; touch-action: none; }
+  .crop-shade { position: absolute; background: #000A; pointer-events: none; }
+  .crop-box {
+    position: absolute; border: 1px solid #FFFD; cursor: move;
+    box-shadow: 0 0 0 9999px transparent;
+  }
+  .crop-box::before, .crop-box::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    border-color: #FFFFFF55; border-style: solid;
+  }
+  .crop-box::before { border-width: 0 1px; left: 33.33%; right: 33.33%; }
+  .crop-box::after  { border-width: 1px 0; top: 33.33%; bottom: 33.33%; }
+  .crop-h {
+    position: absolute; width: 26px; height: 26px; border: 2px solid #fff;
+    background: #0006; border-radius: 3px;
+  }
+  .crop-h[data-c=nw] { left: -13px; top: -13px; cursor: nwse-resize; }
+  .crop-h[data-c=ne] { right: -13px; top: -13px; cursor: nesw-resize; }
+  .crop-h[data-c=sw] { left: -13px; bottom: -13px; cursor: nesw-resize; }
+  .crop-h[data-c=se] { right: -13px; bottom: -13px; cursor: nwse-resize; }
+
   .hero-tag {
     position: absolute; top: .6rem; left: .6rem; font-size: .72rem;
     background: #000A; padding: .25rem .6rem; border-radius: 999px; pointer-events: none;
@@ -234,10 +274,12 @@
 </head>
 <body>
 
-<header>
+<header style="position:sticky; top:0;">
   <button id="back" class="icon-btn" hidden aria-label="Back to library">←</button>
   <div class="title" id="head-title">photo-enhance</div>
   <div class="meta">
+    <button id="delete" class="icon-btn" hidden aria-label="Delete this photo"
+            title="Delete this photo and its renders">🗑</button>
     <span id="whoami"></span>
     <a href="/settings">Settings</a>
   </div>
@@ -259,6 +301,7 @@
   <div class="hero-wrap" id="hero-wrap">
     <img id="hero" alt="Preview of the selected look" />
     <img id="hero-orig" alt="The original photo, for comparison" />
+    <div class="crop-layer" id="crop-layer" hidden></div>
     <span class="hero-tag" id="hero-tag"></span>
     <button class="compare-btn" id="compare">Hold to compare</button>
   </div>
@@ -319,6 +362,7 @@ const state = {
   style: null,
   strength: 100,
   crop: '',
+  cropRect: null,
   group: 'smart',
 };
 
@@ -517,6 +561,7 @@ async function openEditor(importId) {
   state.current = meta;
   state.strength = 100;
   state.crop = '';
+  state.cropRect = null;
   const region = meta.region_recipes || [];
   state.group = region.length ? 'smart' : 'signature';
   state.style = (meta.styles[0] || {}).key || null;
@@ -524,6 +569,8 @@ async function openEditor(importId) {
   $('view-library').hidden = true;
   $('view-editor').hidden = false;
   $('back').hidden = false;
+  $('delete').hidden = false;
+  resetDelete();
   $('head-title').textContent = meta.source_name || 'photo';
   $('strength').value = 100;
   $('strength-out').textContent = '100%';
@@ -539,6 +586,8 @@ function closeEditor() {
   $('view-editor').hidden = true;
   $('view-library').hidden = false;
   $('back').hidden = true;
+  $('delete').hidden = true;
+  resetDelete();
   $('head-title').textContent = 'photo-enhance';
   state.current = null;
   loadLibrary();
@@ -599,22 +648,111 @@ function renderFilm() {
   }
 }
 
+// The crop rectangle lives in fractions of the frame, so it survives every
+// resolution the preview and the final render happen at.
+function cropFromPreset(c) {
+  const ref = state.current.crop_ref || {};
+  const rw = ref.w || 1, rh = ref.h || 1;
+  return { x: c.x / rw, y: c.y / rh, w: c.w / rw, h: c.h / rh };
+}
+
+function drawCrop() {
+  const layer = $('crop-layer');
+  const r = state.cropRect;
+  if (!r) { layer.hidden = true; layer.innerHTML = ''; return; }
+  const img = $('hero');
+  // The image is object-fit: contain, so the painted area may be smaller
+  // than the layer -- the box has to track the picture, not the box element.
+  const cw = img.clientWidth, ch = img.clientHeight;
+  const nw = img.naturalWidth || cw, nh = img.naturalHeight || ch;
+  const scale = Math.min(cw / nw, ch / nh) || 1;
+  const pw = nw * scale, ph = nh * scale;
+  const ox = (cw - pw) / 2, oy = (ch - ph) / 2;
+  const L = ox + r.x * pw, T = oy + r.y * ph, W = r.w * pw, H = r.h * ph;
+  layer.hidden = false;
+  layer.innerHTML = `
+    <div class="crop-shade" style="left:0;top:0;right:0;height:${T}px"></div>
+    <div class="crop-shade" style="left:0;top:${T + H}px;right:0;bottom:0"></div>
+    <div class="crop-shade" style="left:0;top:${T}px;width:${L}px;height:${H}px"></div>
+    <div class="crop-shade" style="left:${L + W}px;top:${T}px;right:0;height:${H}px"></div>
+    <div class="crop-box" id="crop-box" style="left:${L}px;top:${T}px;width:${W}px;height:${H}px">
+      <div class="crop-h" data-c="nw"></div><div class="crop-h" data-c="ne"></div>
+      <div class="crop-h" data-c="sw"></div><div class="crop-h" data-c="se"></div>
+    </div>`;
+  wireCropDrag(pw, ph, ox, oy);
+}
+
+function wireCropDrag(pw, ph, ox, oy) {
+  const box = $('crop-box');
+  if (!box) return;
+  const start = (e, mode) => {
+    e.preventDefault(); e.stopPropagation();
+    const r0 = { ...state.cropRect };
+    const sx = e.clientX, sy = e.clientY;
+    const ar = r0.w * pw / (r0.h * ph);
+    const move = (ev) => {
+      const dx = (ev.clientX - sx) / pw, dy = (ev.clientY - sy) / ph;
+      let r = { ...r0 };
+      if (mode === 'move') {
+        r.x = Math.min(Math.max(r0.x + dx, 0), 1 - r0.w);
+        r.y = Math.min(Math.max(r0.y + dy, 0), 1 - r0.h);
+      } else {
+        // Resize about the opposite corner, keeping the preset's aspect.
+        const signX = mode.includes('e') ? 1 : -1;
+        let w = Math.min(Math.max(r0.w + signX * dx, 0.05), 1);
+        let h = w * pw / ar / ph;
+        if (h > 1) { h = 1; w = h * ph * ar / pw; }
+        r.w = w; r.h = h;
+        r.x = mode.includes('e') ? r0.x : r0.x + r0.w - w;
+        r.y = mode.includes('s') ? r0.y : r0.y + r0.h - h;
+        r.x = Math.min(Math.max(r.x, 0), 1 - w);
+        r.y = Math.min(Math.max(r.y, 0), 1 - h);
+      }
+      state.cropRect = r;
+      state.crop = '';           // a dragged frame is no longer a preset
+      drawCrop();
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      renderCrops();
+      resetProgress();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+  box.addEventListener('pointerdown', e => {
+    if (e.target.classList.contains('crop-h')) return;
+    start(e, 'move');
+  });
+  box.querySelectorAll('.crop-h').forEach(h =>
+    h.addEventListener('pointerdown', e => start(e, h.dataset.c)));
+}
+
 function renderCrops() {
   const crops = state.current.crops || [];
   $('crop-panel').hidden = !crops.length;
   if (!crops.length) return;
   const box = $('crops');
   box.innerHTML = '';
-  const mk = (key, label) => {
+  const mk = (key, label, onPick) => {
     const b = document.createElement('button');
     b.className = 'chip';
-    b.setAttribute('aria-pressed', String(state.crop === key));
+    b.setAttribute('aria-pressed', String(state.crop === key && !(key === '' && state.cropRect)));
     b.textContent = label;
-    b.addEventListener('click', () => { state.crop = key; renderCrops(); resetProgress(); });
+    b.addEventListener('click', () => { onPick(); renderCrops(); drawCrop(); resetProgress(); });
     box.appendChild(b);
   };
-  mk('', 'Full frame');
-  for (const c of crops) mk(c.key, c.label);
+  mk('', 'Full frame', () => { state.crop = ''; state.cropRect = null; });
+  for (const c of crops) {
+    mk(c.key, c.label, () => { state.crop = c.key; state.cropRect = cropFromPreset(c); });
+  }
+  if (state.cropRect && !state.crop) {
+    const tag = document.createElement('span');
+    tag.style.cssText = 'font-size:.75rem;color:var(--text-dim);align-self:center';
+    tag.textContent = 'custom framing — drag on the photo';
+    box.appendChild(tag);
+  }
 }
 
 // Hero updates are preloaded and swapped, so the image never blanks between
@@ -635,6 +773,7 @@ function updateHero() {
     if (token !== heroToken) return;
     $('hero').src = img.src;
     wrap.classList.remove('loading');
+    drawCrop();
   };
   img.onerror = () => { if (token === heroToken) wrap.classList.remove('loading'); };
   img.src = url;
@@ -662,10 +801,67 @@ for (const el of [$('compare'), $('hero')]) {
 $('compare').addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Enter') compareOn(e); });
 $('compare').addEventListener('keyup', compareOff);
 
+// Deleting removes the import and every render under it -- and for an
+// uploaded file, the only copy of the source. Confirmed with an anchored
+// popover rather than a second click on the same button: a control that
+// changes size (and disarms on a timer) moves the target out from under the
+// pointer, which is exactly how the first version silently did nothing.
+let confirmPop = null;
+function resetDelete() {
+  if (confirmPop) { confirmPop.remove(); confirmPop = null; }
+  $('delete').classList.remove('danger');
+}
+$('delete').addEventListener('click', () => {
+  if (confirmPop) return resetDelete();
+  if (!state.current) return;
+  const name = state.current.source_name || 'this photo';
+  $('delete').classList.add('danger');
+  confirmPop = document.createElement('div');
+  confirmPop.className = 'confirm-pop';
+  confirmPop.innerHTML = `
+    <p>Delete <strong>${escapeHtml(name)}</strong>?<br>
+       <span class="sub">Its renders go too, and an uploaded original has no other copy.
+       This cannot be undone.</span></p>
+    <div class="actions">
+      <button class="btn ghost" data-act="cancel">Cancel</button>
+      <button class="btn destructive" data-act="confirm">Delete</button>
+    </div>`;
+  document.querySelector('header').appendChild(confirmPop);
+  confirmPop.querySelector('[data-act=cancel]').addEventListener('click', resetDelete);
+  confirmPop.querySelector('[data-act=confirm]').addEventListener('click', doDelete);
+  confirmPop.querySelector('[data-act=confirm]').focus();
+});
+async function doDelete(e) {
+  const btn = e.currentTarget;
+  const id = state.current && state.current.id;
+  const name = (state.current && state.current.source_name) || 'photo';
+  if (!id) return resetDelete();
+  btn.disabled = true;
+  btn.textContent = 'Deleting…';
+  try {
+    const r = await fetch('/api/gallery/' + id, { method: 'DELETE' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    resetDelete();
+    closeEditor();
+    toast(`Deleted ${name}`);
+  } catch (err) {
+    toast('Could not delete: ' + err, true);
+    btn.disabled = false;
+    btn.textContent = 'Delete';
+  }
+}
+
+window.addEventListener('resize', () => { if (state.current) drawCrop(); });
+$('hero').addEventListener('load', drawCrop);
+
 $('back').addEventListener('click', closeEditor);
 $('open-picker').addEventListener('click', openPicker);
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { if (picker) closePicker(); else if (state.current) closeEditor(); }
+  if (e.key === 'Escape') {
+    if (picker) closePicker();
+    else if (confirmPop) resetDelete();
+    else if (state.current) closeEditor();
+  }
 });
 
 // ---------------------------------------------------------------- download
@@ -691,7 +887,12 @@ $('download').addEventListener('click', async () => {
   const form = new FormData();
   form.append('import_id', state.current.id);
   form.append('style_key', state.style);
-  if (state.crop) form.append('crop', state.crop);
+  if (state.cropRect && !state.crop) {
+    const r = state.cropRect;
+    form.append('crop_rect', [r.x, r.y, r.w, r.h].map(v => v.toFixed(4)).join(','));
+  } else if (state.crop) {
+    form.append('crop', state.crop);
+  }
   form.append('strength', (state.strength / 100).toFixed(2));
   try {
     const start = await fetch('/api/render', { method: 'POST', body: form });
