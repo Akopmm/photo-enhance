@@ -2,9 +2,16 @@
 
 A self-hosted, Lightroom-style photo enhancement service. Point it at a photo — Canon CR3, Sony ARW, or plain JPEG — and it predicts a colour/exposure correction with a small neural network, then renders **18 style variants** on top of it. In *enhanced* mode it also segments the photo — subject, sky, foliage and depth — so those can be graded separately, and suggests compositional crops.
 
-Runs entirely on a home server's CPU. No GPU required, nothing leaves the machine.
+Runs on a home server. Nothing leaves the machine, and every model is Apache-2.0 or MIT.
 
 Built as a personal alternative to an Adobe Lightroom subscription.
+
+![The full path of a RAW file through photo-enhance: five neural networks and one look engine,
+showing which run on the CPU and which on the integrated GPU](docs/pipeline.jpg)
+
+*Every panel above is a real intermediate from one Canon CR3 — including the three masks, which are
+what BiRefNet, UPerNet and Depth Anything actually produced on that frame. Timings measured on the
+deploy box, a six-core i5-10500T with UHD 630 graphics.*
 
 ---
 
