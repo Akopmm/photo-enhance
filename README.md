@@ -254,10 +254,25 @@ downsampling and therefore the only one genuinely compute-bound (2.52× on an In
 if you would rather have the memory. Gen9.5 hardware needs Intel's *legacy* 24.35 driver line; the
 Dockerfile pins it.
 
-⚠️ **One caveat if you intend to use this commercially.** The shipped 3D-LUT weights were trained on
-**MIT-Adobe FiveK**, whose dataset terms are research-oriented, and BiRefNet's *weights* card declares
-no licence even though its code repository is MIT. Both are fine for personal use; neither is legal
-advice.
+### If you want to use this commercially
+
+The models are the easy part — all five are Apache-2.0 or MIT. Three other things deserve a look, in
+descending order of how much they matter. **None of this is legal advice.**
+
+1. **LibRaw is LGPL-2.1 / CDDL-1.0** (dual, with a paid commercial option). It is what actually
+   decodes your CR3 files, reached through `rawpy` — `rawpy` itself is MIT, but the decoder underneath
+   is not. Running this **as a service** does not trigger distribution obligations at all. Shipping it
+   as a **closed-source binary** does: you would need to keep LibRaw dynamically linked and allow
+   relinking, or buy LibRaw's commercial licence.
+2. **The shipped 3D-LUT weights were trained on MIT-Adobe FiveK**, whose dataset terms are
+   research-oriented. The architecture's Apache-2.0 licence covers the code, not the question of what
+   the weights were learned from. Avoidable if it matters: retrain the LUT on permissively licensed
+   pairs — `training/` already does exactly this.
+3. **BiRefNet's weights card declares no licence**, even though its code repository is MIT. Worth an
+   upstream issue asking them to state it explicitly.
+
+Everything else in the runtime is permissive: torch, numpy and Pillow are BSD-family; transformers,
+timm, kornia, OpenVINO and python-multipart are Apache-2.0; FastAPI, einops and rawpy are MIT.
 
 ## License
 
