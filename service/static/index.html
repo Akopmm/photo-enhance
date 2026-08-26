@@ -338,7 +338,7 @@
 
   <div class="panel" id="crop-panel" hidden>
     <div class="label"><span>Crop</span></div>
-    <div class="chips" id="crops"></div>
+    <div id="crops"></div>
   </div>
 
   <div class="panel" id="motion-panel" hidden>
@@ -631,7 +631,9 @@ async function openEditor(importId) {
   renderFilm();
   // Offered only when this import actually has a depth map -- the GIF is
   // re-projection of the depth, so without one there is nothing to animate.
-  $('motion-panel').hidden = !(meta.region_recipes || []).some(k => k.startsWith('depth_'));
+  // 3D motion GIFs are parked: the endpoint and the renderer stay, but the
+  // buttons are hidden until they earn their place in the editor.
+  $('motion-panel').hidden = true;
   renderSizes();
   renderCrops();
   updateHero();
@@ -810,36 +812,59 @@ function renderCrops() {
   if (!crops.length) return;
   const box = $('crops');
   box.innerHTML = '';
-  const mk = (key, label, onPick) => {
+  // Each group gets its OWN row with the heading above it. The heading used
+  // to be an inline chip-sibling, so it landed in the middle of a row and the
+  // groups interleaved as they wrapped.
+  const row = () => {
+    const r = document.createElement('div');
+    r.className = 'chips';
+    r.style.marginBottom = '.45rem';
+    box.appendChild(r);
+    return r;
+  };
+  const heading = (text) => {
+    const h = document.createElement('div');
+    h.style.cssText = 'width:100%;font-size:.68rem;color:var(--text-dim);'
+      + 'text-transform:uppercase;letter-spacing:.09em;margin:.35rem 0 .3rem';
+    h.textContent = text;
+    box.appendChild(h);
+  };
+  const mk = (parent, key, label, onPick) => {
     const b = document.createElement('button');
     b.className = 'chip';
     b.setAttribute('aria-pressed', String(state.crop === key && !(key === '' && state.cropRect)));
     b.textContent = label;
     b.addEventListener('click', () => { onPick(); renderCrops(); drawCrop(); resetProgress(); });
-    box.appendChild(b);
+    parent.appendChild(b);
   };
-  mk('', 'Full frame', () => { state.crop = ''; state.cropRect = null; });
-  // Instagram ratios first and labelled: they are the ones with a right
-  // answer. Post outside 1.91:1..4:5 and Instagram re-crops it for you.
-  const groups = [['instagram', 'Instagram'], ['classic', null]];
-  for (const [g, heading] of groups) {
-    const items = crops.filter(c => (c.group || 'classic') === g);
-    if (!items.length) continue;
-    if (heading) {
-      const h = document.createElement('span');
-      h.style.cssText = 'font-size:.7rem;color:var(--text-dim);align-self:center;'
-        + 'text-transform:uppercase;letter-spacing:.07em;margin-right:.2rem';
-      h.textContent = heading;
-      box.appendChild(h);
-    }
-    for (const c of items) {
-      mk(c.key, c.label.replace(/^Instagram /, ''),
+
+  const first = row();
+  mk(first, '', 'Full frame', () => { state.crop = ''; state.cropRect = null; });
+
+  // Instagram ratios in the order you'd actually reach for them, not in
+  // whatever order the crop scorer happened to return.
+  const IG_ORDER = ['ig_story', 'ig_portrait', 'ig_square', 'ig_landscape'];
+  const byKey = Object.fromEntries(crops.map(c => [c.key, c]));
+  const ig = IG_ORDER.map(k => byKey[k]).filter(Boolean);
+  if (ig.length) {
+    heading('Instagram');
+    const r = row();
+    for (const c of ig) {
+      mk(r, c.key, c.label.replace(/^Instagram /, ''),
          () => { state.crop = c.key; state.cropRect = cropFromPreset(c); });
     }
   }
+  const other = crops.filter(c => (c.group || 'classic') !== 'instagram');
+  if (other.length) {
+    heading('Classic');
+    const r = row();
+    for (const c of other) {
+      mk(r, c.key, c.label, () => { state.crop = c.key; state.cropRect = cropFromPreset(c); });
+    }
+  }
   if (state.cropRect && !state.crop) {
-    const tag = document.createElement('span');
-    tag.style.cssText = 'font-size:.75rem;color:var(--text-dim);align-self:center';
+    const tag = document.createElement('div');
+    tag.style.cssText = 'font-size:.75rem;color:var(--text-dim);margin-top:.3rem';
     tag.textContent = 'custom framing — drag on the photo';
     box.appendChild(tag);
   }
