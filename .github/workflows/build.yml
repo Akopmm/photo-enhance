@@ -2,7 +2,7 @@ name: Build and publish image
 
 on:
   push:
-    branches: [main, enhanced]
+    branches: [main]
 
 jobs:
   build:
@@ -50,21 +50,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # main -> :latest (the stable service optiplex runs on :5054)
-      # enhanced -> :next (deployed alongside on :5055, never overwrites :latest)
-      - name: Pick image tag
-        id: tag
-        run: |
-          if [ "${{ github.ref_name }}" = "main" ]; then
-            echo "tag=latest" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=next" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
           file: service/Dockerfile
           push: true
-          tags: ghcr.io/akopmm/photo-enhance:${{ steps.tag.outputs.tag }}
+          tags: ghcr.io/akopmm/photo-enhance:latest
