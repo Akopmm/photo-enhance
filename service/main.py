@@ -79,8 +79,16 @@ async def auth_and_cache(request: Request, call_next):
 
 @app.get("/health")
 async def health():
+    try:
+        import denoise
+        dn_state = {"weights": denoise.available(),
+                    "loaded": denoise.loaded(),
+                    "device": denoise.device_in_use()}
+    except Exception:  # noqa: BLE001
+        dn_state = {"weights": False, "loaded": False, "device": "unavailable"}
     return {
         "status": "ok",
+        "denoise": dn_state,
         "model": runtime.status(),
         "mode": settings.get("mode"),
         "max_concurrent_jobs": settings.get("max_concurrent_jobs"),

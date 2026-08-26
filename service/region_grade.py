@@ -27,13 +27,6 @@ def graded(arr: np.ndarray, params: dict) -> np.ndarray:
     return _to_array(apply_look(_to_tensor(arr), params))
 
 
-def composite(base: np.ndarray, overlay: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """mask=1 -> overlay, mask=0 -> base. Allocating form, kept for callers
-    that need `base` preserved; region_grade uses _blend_into instead."""
-    m = np.clip(mask, 0, 1)[..., None]
-    return np.clip(base * (1 - m) + overlay * m, 0, 1)
-
-
 def _blend_into(base: np.ndarray, layer: np.ndarray, weight) -> None:
     """base := clip(base + (layer - base) * weight), entirely in place.
 

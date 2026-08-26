@@ -13,7 +13,6 @@ OpenAPI spec (GET /api/spec.json), not guessed from memory:
   - GET  /api/assets/{id}/original   -> original file bytes, untouched
                                          (this is what returns CR3/ARW as-shot)
 """
-import os
 import re
 import urllib.parse
 

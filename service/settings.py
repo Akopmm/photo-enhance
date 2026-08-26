@@ -104,10 +104,6 @@ def get(key: str):
     return _load().get(key, DEFAULTS.get(key))
 
 
-def all_settings() -> dict:
-    return dict(_load())
-
-
 def _mask_key(key: str) -> str:
     if not key:
         return ""

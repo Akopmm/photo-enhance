@@ -1,6 +1,6 @@
 """Semantic mask generation for region-aware photo grading.
 
-Four complementary mask sources, because no single model does all of it well:
+Three complementary mask sources, because no single model does all of it well:
 
   subject  -- BiRefNet-lite (44M params, MIT). Purpose-built dichotomous
               segmentation; gives crisp foreground cutouts. This is the
@@ -10,9 +10,6 @@ Four complementary mask sources, because no single model does all of it well:
   depth    -- Depth Anything V2 Small (24.8M, Apache-2.0). Lightroom's
               "Depth Range Mask": grade by distance instead of by object,
               which needs no foreground/background decision at all.
-  prompt   -- CLIPSeg, arbitrary text ("car", "the red jacket"). Most
-              flexible, but noticeably coarser/softer than the others --
-              use it for broad regions, not crisp cutouts.
 
 MASK_RESOLUTION and why masks are computed exactly once
 -------------------------------------------------------
@@ -241,32 +238,6 @@ def depth_band(depth: np.ndarray, near: float, far: float, softness: float = 0.1
     np.clip(falling, 0, 1, out=falling)
     rising *= falling
     return rising
-
-
-# ---------------- text prompt (CLIPSeg) ----------------
-
-def _clipseg():
-    if "clipseg" not in _cache:
-        from transformers import CLIPSegProcessor, CLIPSegForImageSegmentation
-        name = "CIDAS/clipseg-rd64-refined"
-        proc = CLIPSegProcessor.from_pretrained(name)
-        model = CLIPSegForImageSegmentation.from_pretrained(name).eval().to(_device())
-        _cache["clipseg"] = (proc, model)
-    return _cache["clipseg"]
-
-
-@torch.no_grad()
-def prompt_mask(img: Image.Image, prompt: str) -> np.ndarray:
-    """Mask from a free-text prompt. Coarser than the other two."""
-    proc, model = _clipseg()
-    small = _at_working_size(img)
-    inputs = proc(text=[prompt], images=[small.convert("RGB")],
-                  padding=True, return_tensors="pt").to(_device())
-    logits = model(**inputs).logits
-    if logits.dim() == 2:
-        logits = logits.unsqueeze(0)
-    m = torch.sigmoid(logits)[0].cpu().numpy()
-    return _resize_mask(m, small.size)
 
 
 # ---------------- helpers ----------------
