@@ -96,6 +96,80 @@ def _thumb_edge() -> int:
 # under the time it takes to drag a slider.
 HERO_EDGE = 1280
 
+# Output size presets. The long edge is what actually matters -- denoise cost
+# scales with pixel count, so halving the edge quarters the work, and the
+# resize happens right after the colour model so denoise, styling and
+# cropping ALL run smaller, not just the final encode.
+#
+# Measured on a 26MP CR3 with GPU denoise: full frame 140 tiles / 9.1 min,
+# against 48 tiles / 3.1 min at "large". "Original" stays the default -- the
+# whole point of the service was keeping full-resolution quality.
+SIZE_PRESETS = {
+    "original": {"edge": None, "target_mb": None, "label": "Original"},
+    "large":    {"edge": 4200, "target_mb": 5.0,  "label": "Large (~5 MB)"},
+    "medium":   {"edge": 3200, "target_mb": 3.0,  "label": "Medium (~3 MB)"},
+    "small":    {"edge": 1800, "target_mb": 1.0,  "label": "Small (~1 MB)"},
+}
+
+
+class RenderCancelled(Exception):
+    """Raised when the import a render belongs to is deleted underneath it.
+
+    Cooperative rather than task.cancel(): the render can then stop at a
+    clean boundary instead of part-way through writing a file into a
+    directory that no longer exists."""
+
+
+def _resolve_crop(import_id: str, crop_key: str | None, rect: dict | None) -> dict | None:
+    """Any crop -- dragged rectangle or stored preset -- as fractions of the
+    frame, so it can be applied before anything expensive runs."""
+    if rect:
+        return rect
+    if not crop_key:
+        return None
+    meta = storage.get_import(import_id) or {}
+    c = next((c for c in meta.get("crops", []) if c["key"] == crop_key), None)
+    if not c:
+        raise KeyError(f"unknown crop {crop_key!r}")
+    ref = meta.get("crop_ref") or {}
+    rw, rh = ref.get("w"), ref.get("h")
+    if not rw or not rh:
+        return None
+    return {"x": c["x"] / rw, "y": c["y"] / rh, "w": c["w"] / rw, "h": c["h"] / rh}
+
+
+def _crop_tensor(t: torch.Tensor, r: dict) -> torch.Tensor:
+    h, w = t.shape[2], t.shape[3]
+    x0, y0 = int(round(r["x"] * w)), int(round(r["y"] * h))
+    x1, y1 = min(w, x0 + int(round(r["w"] * w))), min(h, y0 + int(round(r["h"] * h)))
+    return t[:, :, y0:y1, x0:x1]
+
+
+def _crop_array(a: np.ndarray, r: dict) -> np.ndarray:
+    h, w = a.shape[:2]
+    x0, y0 = int(round(r["x"] * w)), int(round(r["y"] * h))
+    x1, y1 = min(w, x0 + int(round(r["w"] * w))), min(h, y0 + int(round(r["h"] * h)))
+    return a[y0:y1, x0:x1]
+
+
+def _encode_to_target(arr: np.ndarray, target_mb: float | None) -> bytes:
+    """Encode, and if a size was asked for, step quality down until it fits.
+
+    Sizes are labelled in MB, so they should mean something: a denoised frame
+    compresses far better than a noisy one, and content varies wildly, so a
+    fixed quality would make the label a guess. Three encodes at most.
+    """
+    q = _jpeg_quality()
+    data = _array_to_jpeg_bytes(arr, q)
+    if not target_mb:
+        return data
+    limit = target_mb * 1e6
+    for q in (88, 82, 76):
+        if len(data) <= limit:
+            break
+        data = _array_to_jpeg_bytes(arr, q)
+    return data
+
 
 def _decode_full(raw_bytes: bytes, filename: str, no_auto_bright: bool = True,
                  half_size: bool = False) -> np.ndarray:
@@ -280,7 +354,8 @@ _RECIPE_MASKS = {
 _MASK_SOURCE = {"near": "depth", "far": "depth"}
 
 
-def _prepare_masks(stored: dict, size: tuple[int, int], only: tuple | None = None) -> dict:
+def _prepare_masks(stored: dict, size: tuple[int, int], only: tuple | None = None,
+                   crop: dict | None = None) -> dict:
     """Resample stored masks to (w, h) and feather relative to THAT size.
 
     Storing raw alpha and feathering per-target is what keeps the preview and
@@ -297,6 +372,11 @@ def _prepare_masks(stored: dict, size: tuple[int, int], only: tuple | None = Non
         stored = {k: v for k, v in stored.items() if k in wanted}
     out = {}
     for key, mask in stored.items():
+        if crop:
+            # Crop the stored (full-frame) mask by the same fractions as the
+            # image, otherwise a cropped render would be graded through a
+            # mask belonging to the whole frame.
+            mask = _crop_array(mask, crop)
         m = masking.resample(mask, size)
         if key == "depth":
             # Bands are PERCENTILES of this photo's own depth distribution,
@@ -613,7 +693,8 @@ def _parse_crop_rect(spec: str | None) -> dict | None:
 async def render_full_style(import_id: str, style_key: str, crop_key: str | None = None,
                             strength: float = 1.0, progress=None,
                             crop_rect: str | None = None,
-                            denoise_amount: float | None = None) -> str:
+                            denoise_amount: float | None = None,
+                            size: str = "original", cancelled=None) -> str:
     """Full-resolution render of one style, on first request, then cached.
 
     `crop_key` optionally applies one of the stored composition suggestions.
@@ -625,10 +706,16 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
     # a full-resolution render is ~12s and silence for that long reads as a
     # hang. Stages are coarse but each one is a genuine boundary in the work.
     def _say(pct, msg):
+        # Also the cancellation checkpoint: called at every stage boundary
+        # and once per denoise tile, which is the granularity that matters
+        # when the expensive stage is minutes long.
+        if cancelled and cancelled():
+            raise RenderCancelled(import_id)
         if progress:
             progress(pct, msg)
 
     strength = min(max(float(strength), 0.0), 1.0)
+    _size = SIZE_PRESETS.get(size or "original", SIZE_PRESETS["original"])
     rect = _parse_crop_rect(crop_rect)
     if rect:
         # A dragged rectangle gets its own cache entry, keyed by the numbers
@@ -644,6 +731,8 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
     _dn_amt = _dn_meta.get("amount", 0.9) if denoise_amount is None else denoise_amount
     if _dn_meta.get("available") and _dn_amt:
         cache_key = f"{cache_key}__d{round(float(_dn_amt) * 100):03d}"
+    if _size["edge"]:
+        cache_key = f"{cache_key}__{size}"
     if storage.full_render_exists(import_id, cache_key):
         _say(100, "Ready")
         return storage.full_render_path(import_id, cache_key)
@@ -673,6 +762,21 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
         baseline = await runtime.infer(tensor)
         arr = tensor = None
 
+        # Crop FIRST, before denoise, styling and sizing. It used to happen
+        # last, on the finished JPEG: that denoised and styled the whole frame
+        # only to discard most of it on a 2.39:1 crop, and -- worse -- decoded
+        # and re-encoded the JPEG, so every cropped download was compressed
+        # twice.
+        norm_crop = _resolve_crop(import_id, crop_key, rect)
+        if norm_crop:
+            _say(_stage(48, 13), "Cropping")
+            baseline = _crop_tensor(baseline, norm_crop)
+
+        if _size["edge"]:
+            want = min(_size["edge"], max(baseline.shape[2], baseline.shape[3]))
+            baseline = await asyncio.to_thread(_resize_tensor, baseline, want)
+            _say(_stage(50, 14), f"Sizing to {_size['label']}")
+
         if _dn_meta.get("available") and float(_dn_amt) > 0:
             _say(14, "Removing noise")
             base_np = baseline.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
@@ -695,7 +799,9 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
                 # Blend back toward the uncorrected baseline, matching what
                 # the preview showed at this strength.
                 styled = baseline + (styled - baseline) * strength
-            jpeg = await asyncio.to_thread(_tensor_to_jpeg_bytes, styled, _jpeg_quality())
+            arr_out = styled.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
+            jpeg = await asyncio.to_thread(_encode_to_target, arr_out, _size["target_mb"])
+            arr_out = None
         else:
             # Region recipe. The masks are NOT recomputed here: they are
             # loaded and resampled, which is both cheaper and the only way
@@ -706,33 +812,14 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
             base_arr = baseline.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
             h, w = base_arr.shape[:2]
             stored_masks, scene = await _masks_for(import_id, baseline)
-            masks = _prepare_masks(stored_masks, (w, h), only=_RECIPE_MASKS.get(style_key))
+            masks = _prepare_masks(stored_masks, (w, h), only=_RECIPE_MASKS.get(style_key),
+                                   crop=norm_crop)
             stored_masks = None  # 1024px originals are dead weight from here
             recipe = next((r for k, _l, r in _region_recipes(masks, scene) if k == style_key), None)
             if recipe is None:
                 raise KeyError(f"unknown or unavailable style {style_key!r}")
             out = await asyncio.to_thread(rg.region_grade, base_arr, recipe, strength)
-            jpeg = await asyncio.to_thread(_array_to_jpeg_bytes, out, _jpeg_quality())
-
-        if rect:
-            _say(_stage(88, 93), "Cropping")
-            full = np.asarray(Image.open(io.BytesIO(jpeg)).convert("RGB"))
-            fh, fw = full.shape[:2]
-            px = dict(x=rect["x"] * fw, y=rect["y"] * fh,
-                      w=rect["w"] * fw, h=rect["h"] * fh)
-            jpeg = await asyncio.to_thread(
-                _array_to_jpeg_bytes, cropping.apply_crop(full, px), _jpeg_quality())
-        elif crop_key:
-            _say(_stage(88, 93), "Cropping")
-            meta = storage.get_import(import_id) or {}
-            crop = next((c for c in meta.get("crops", []) if c["key"] == crop_key), None)
-            if crop is None:
-                raise KeyError(f"unknown crop {crop_key!r}")
-            ref = meta.get("crop_ref", {})
-            crop = dict(crop, ref_w=ref.get("w"), ref_h=ref.get("h"))
-            full = np.asarray(Image.open(io.BytesIO(jpeg)).convert("RGB"))
-            jpeg = await asyncio.to_thread(
-                _array_to_jpeg_bytes, cropping.apply_crop(full, crop), _jpeg_quality())
+            jpeg = await asyncio.to_thread(_encode_to_target, out, _size["target_mb"])
 
         _say(_stage(94, 96), "Saving")
         await asyncio.to_thread(storage.save_full_render, import_id, cache_key, jpeg)

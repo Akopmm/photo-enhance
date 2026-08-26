@@ -50,6 +50,41 @@ h=hashlib.sha256(open(dst,'rb').read()).hexdigest(); \
 print('scunet sha256', h, os.path.getsize(dst)//1024, 'KB'); \
 sys.exit(0 if h.startswith('fa78899ba2caec9d') else 1)"
 
+# --- Intel iGPU compute runtime (optional acceleration for the denoiser) ---
+#
+# The OpenVINO wheel already ships libopenvino_intel_gpu_plugin.so, but with
+# no Intel driver underneath it reports no GPU at all and silently runs on
+# CPU. That is very likely why an earlier "openvino_gpu is no faster than
+# CPU" benchmark came out flat -- it was comparing CPU against CPU.
+#
+# Two traps, both found the hard way:
+#  1. This box's UHD 630 is Gen9.5, which current compute-runtime releases
+#     have DROPPED. Legacy platforms need the 24.35 line, per Intel's own
+#     LEGACY_PLATFORMS.md -- installing the newest driver would never see it.
+#  2. intel-opencl-icd-legacy1 pins an exact IGC build (1.0.17537.24). Pairing
+#     it with a newer IGC leaves the OpenCL ICD unconfigured.
+#
+# Measured on optiplex once working: SCUNet 9.75s -> 3.86s per 512px tile,
+# a 2.52x speedup.
+ARG CR=24.35.30872.36
+ARG IGC=1.0.17537.24
+RUN set -eux; \
+    apt-get update -qq; \
+    apt-get install -y --no-install-recommends ocl-icd-libopencl1 libze1; \
+    cd /tmp; \
+    for f in \
+      "https://github.com/intel/intel-graphics-compiler/releases/download/igc-${IGC}/intel-igc-core_${IGC}_amd64.deb" \
+      "https://github.com/intel/intel-graphics-compiler/releases/download/igc-${IGC}/intel-igc-opencl_${IGC}_amd64.deb" \
+      "https://github.com/intel/compute-runtime/releases/download/${CR}/libigdgmm12_22.5.0_amd64.deb" \
+      "https://github.com/intel/compute-runtime/releases/download/${CR}/intel-opencl-icd-legacy1_${CR}_amd64.deb" \
+      "https://github.com/intel/compute-runtime/releases/download/${CR}/intel-level-zero-gpu-legacy1_1.5.${CR#*.*.}_amd64.deb" ; \
+      do python -c "import urllib.request,sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[1].rsplit('/',1)[1])" "$f"; done; \
+    dpkg -i ./*.deb || apt-get -f install -y --no-install-recommends; \
+    for v in /etc/OpenCL/vendors/*.dpkg-new; do [ -e "$v" ] && mv "$v" "${v%.dpkg-new}" || true; done; \
+    rm -f /tmp/*.deb; \
+    rm -rf /var/lib/apt/lists/*; \
+    ls /etc/OpenCL/vendors/
+
 # Models are baked above, so don't reach out to the Hub at runtime -- a
 # network hiccup should never turn into a failed import.
 ENV HF_HUB_OFFLINE=1

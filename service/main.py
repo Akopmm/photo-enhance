@@ -325,6 +325,11 @@ async def gallery_thumb(import_id: str, style_key: str, strength: float = 1.0,
     return FileResponse(storage.thumb_path(import_id, style_key), media_type="image/jpeg")
 
 
+@app.get("/api/sizes")
+async def output_sizes(user: str = Depends(current_user)):
+    return JSONResponse([{"key": k, **v} for k, v in pipeline.SIZE_PRESETS.items()])
+
+
 @app.get("/api/styles")
 async def styles_catalogue(user: str = Depends(current_user)):
     """Which looks exist and how they group. The editor shows one group at a
@@ -349,7 +354,7 @@ async def gallery_preview(import_id: str, style_key: str, strength: float = 1.0,
     small stored thumbnail for imports made before baselines were kept."""
     _owned(import_id, user)
     data = await pipeline.render_preview_at_strength(import_id, style_key, strength,
-                                                    denoise_amount=denoise)
+                                                    denoise_amount=denoise, size=size)
     if data is not None:
         return Response(content=data, media_type="image/jpeg",
                         headers={"Cache-Control": "no-store"})
@@ -359,13 +364,13 @@ async def gallery_preview(import_id: str, style_key: str, strength: float = 1.0,
 @app.get("/api/gallery/{import_id}/{style_key}.jpg")
 async def gallery_render_full(import_id: str, style_key: str, crop: str | None = None,
                               strength: float = 1.0, crop_rect: str | None = None,
-                              denoise: float | None = None,
+                              denoise: float | None = None, size: str = "original",
                               user: str = Depends(current_user)):
     _owned(import_id, user)
     try:
         path = await pipeline.render_full_style(import_id, style_key, crop_key=crop,
                                                 strength=strength, crop_rect=crop_rect,
-                                                denoise_amount=denoise)
+                                                denoise_amount=denoise, size=size)
     except (FileNotFoundError, KeyError):
         raise HTTPException(404, "unknown import or style")
     except Exception as e:
@@ -395,11 +400,13 @@ async def render_start(import_id: str = Form(...), style_key: str = Form(...),
                        crop: str | None = Form(None), strength: float = Form(1.0),
                        crop_rect: str | None = Form(None),
                        denoise: float | None = Form(None),
+                       size: str = Form("original"),
                        user: str = Depends(current_user)):
     _owned(import_id, user)
     _reap_jobs()
     job_id = uuid.uuid4().hex
     job = {"state": "queued", "pct": 0, "message": "Starting", "owner": user,
+           "import_id": import_id, "cancelled": False,
            "updated": time.time(), "url": None, "error": None}
     _render_jobs[job_id] = job
 
@@ -410,10 +417,14 @@ async def render_start(import_id: str = Form(...), style_key: str = Form(...),
         try:
             await pipeline.render_full_style(import_id, style_key, crop_key=crop,
                                              strength=strength, progress=on_progress,
-                                             crop_rect=crop_rect, denoise_amount=denoise)
+                                             crop_rect=crop_rect, denoise_amount=denoise,
+                                             size=size, cancelled=lambda: job["cancelled"])
             job.update(state="done", pct=100, message="Ready", updated=time.time(),
                        url=f"/api/gallery/{import_id}/{style_key}.jpg"
-                           + _render_query(crop, strength, crop_rect, denoise))
+                           + _render_query(crop, strength, crop_rect, denoise, size))
+        except pipeline.RenderCancelled:
+            job.update(state="error", error="cancelled: the photo was deleted",
+                       updated=time.time())
         except (FileNotFoundError, KeyError) as e:
             job.update(state="error", error=f"unknown import or style: {e}", updated=time.time())
         except Exception as e:  # noqa: BLE001
@@ -423,8 +434,10 @@ async def render_start(import_id: str = Form(...), style_key: str = Form(...),
     return JSONResponse({"job_id": job_id})
 
 
-def _render_query(crop, strength, crop_rect=None, denoise=None):
+def _render_query(crop, strength, crop_rect=None, denoise=None, size=None):
     params = []
+    if size and size != "original":
+        params.append(f"size={size}")
     if denoise is not None:
         params.append(f"denoise={denoise:.2f}")
     if crop_rect:
@@ -447,8 +460,16 @@ async def render_status(job_id: str, user: str = Depends(current_user)):
 @app.delete("/api/gallery/{import_id}")
 async def gallery_delete(import_id: str, user: str = Depends(current_user)):
     _owned(import_id, user)
+    # Stop any render still working on this photo BEFORE removing it. A
+    # full-resolution denoise runs for minutes; without this it would keep
+    # burning a render slot and then fail writing into a deleted directory.
+    stopped = 0
+    for job in _render_jobs.values():
+        if job.get("import_id") == import_id and job["state"] in ("queued", "running"):
+            job["cancelled"] = True
+            stopped += 1
     storage.delete_import(import_id)
-    return JSONResponse({"deleted": import_id})
+    return JSONResponse({"deleted": import_id, "cancelled_renders": stopped})
 
 
 # ---- pages ----

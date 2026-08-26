@@ -331,6 +331,11 @@
     <div class="film" id="film"></div>
   </div>
 
+  <div class="panel">
+    <div class="label"><span>Download size</span><span id="size-hint"></span></div>
+    <div class="chips" id="sizes"></div>
+  </div>
+
   <div class="panel" id="crop-panel" hidden>
     <div class="label"><span>Crop</span></div>
     <div class="chips" id="crops"></div>
@@ -373,6 +378,8 @@ const state = {
   crop: '',
   cropRect: null,
   denoise: null,     // null = this photo has none available
+  size: 'original',
+  sizes: [],
   group: 'smart',
 };
 
@@ -614,6 +621,7 @@ async function openEditor(importId) {
   paintProgress();
   renderGroups();
   renderFilm();
+  renderSizes();
   renderCrops();
   updateHero();
   window.scrollTo({ top: 0 });
@@ -765,6 +773,26 @@ function wireCropDrag(pw, ph, ox, oy) {
     h.addEventListener('pointerdown', e => start(e, h.dataset.c)));
 }
 
+function renderSizes() {
+  const box = $('sizes');
+  box.innerHTML = '';
+  const list = state.sizes.length ? state.sizes
+    : [{ key: 'original', label: 'Original' }];
+  for (const sz of list) {
+    const b = document.createElement('button');
+    b.className = 'chip';
+    b.setAttribute('aria-pressed', String(state.size === sz.key));
+    b.textContent = sz.label;
+    b.addEventListener('click', () => { state.size = sz.key; renderSizes(); resetProgress(); });
+    box.appendChild(b);
+  }
+  // Denoise cost scales with pixels, so a smaller output is dramatically
+  // faster on a noisy photo. Say so where the choice is made.
+  const sel = list.find(x => x.key === state.size) || {};
+  $('size-hint').textContent =
+    (state.denoise !== null && state.denoise > 0 && sel.edge) ? 'much faster to render' : '';
+}
+
 function renderCrops() {
   const crops = state.current.crops || [];
   $('crop-panel').hidden = !crops.length;
@@ -824,7 +852,7 @@ $('denoise').addEventListener('input', e => {
   state.denoise = Number(e.target.value);
   $('denoise-out').textContent = state.denoise + '%';
   clearTimeout(denoiseTimer);
-  denoiseTimer = setTimeout(() => { updateHero(); resetProgress(); }, 140);
+  denoiseTimer = setTimeout(() => { updateHero(); resetProgress(); renderSizes(); }, 140);
 });
 
 let strengthTimer = null;
@@ -959,7 +987,8 @@ $('download').addEventListener('click', async () => {
   const name = `${(imp.source_name || 'photo').replace(/\.[^.]+$/, '')}`
     + `_${state.style}${state.crop ? '_' + state.crop : ''}`
     + `${state.strength < 100 ? '_' + state.strength + 'pct' : ''}`
-    + `${state.denoise !== null && state.denoise > 0 ? '_dn' + state.denoise : ''}.jpg`;
+    + `${state.denoise !== null && state.denoise > 0 ? '_dn' + state.denoise : ''}`
+    + `${state.size !== 'original' ? '_' + state.size : ''}.jpg`;
 
   const form = new FormData();
   form.append('import_id', imp.id);
@@ -972,6 +1001,7 @@ $('download').addEventListener('click', async () => {
   }
   form.append('strength', (state.strength / 100).toFixed(2));
   if (state.denoise !== null) form.append('denoise', (state.denoise / 100).toFixed(2));
+  form.append('size', state.size);
 
   setProgress(imp.id, 2, 'Starting', 'running');
   try {
@@ -1019,6 +1049,7 @@ function pollJob(jobId, importId) {
     $('whoami').textContent = me.username || '';
   } catch (e) { /* the page is behind auth anyway */ }
   try { state.catalogue = await jget('/api/styles'); } catch (e) { state.catalogue = []; }
+  try { state.sizes = await jget('/api/sizes'); } catch (e) { state.sizes = []; }
   await loadLibrary();
 })();
 </script>

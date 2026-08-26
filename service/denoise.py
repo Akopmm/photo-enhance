@@ -49,8 +49,48 @@ TILE = 512
 OVERLAP = 64
 
 
+# auto | cpu | gpu. "auto" uses the Intel iGPU through OpenVINO when a driver
+# is actually present, and falls back silently otherwise -- the container runs
+# unchanged on a box with no GPU.
+DENOISE_DEVICE = os.environ.get("DENOISE_DEVICE", "auto")
+
+
 def _device():
     return "mps" if torch.backends.mps.is_available() else "cpu"
+
+
+def _openvino_tile_model():
+    """SCUNet compiled for the iGPU at the fixed tile shape, or None.
+
+    Every tile is exactly TILE x TILE (edge tiles clamp their origin rather
+    than shrinking), so a static shape is safe -- and static is what makes
+    the GPU plugin worth using. Measured on optiplex: 9.75s -> 3.86s per
+    tile, 2.52x.
+    """
+    if DENOISE_DEVICE == "cpu":
+        return None
+    if "ov" in _cache:
+        return _cache["ov"]
+    _cache["ov"] = None
+    try:
+        import openvino as ov
+        core = ov.Core()
+        if "GPU" not in core.available_devices:
+            logger.info("denoise: no OpenVINO GPU device, staying on CPU")
+            return None
+        example = torch.zeros(1, 3, TILE, TILE)
+        m = ov.convert_model(_model(), example_input=example)
+        _cache["ov"] = core.compile_model(m, "GPU")
+        logger.info("denoise: compiled for iGPU (%s)",
+                    core.get_property("GPU", "FULL_DEVICE_NAME"))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("denoise: iGPU unavailable (%s), staying on CPU", e)
+        _cache["ov"] = None
+    return _cache["ov"]
+
+
+def device_in_use() -> str:
+    return "gpu" if _cache.get("ov") is not None else "cpu"
 
 
 def _model():
@@ -73,7 +113,10 @@ def available() -> bool:
 
 
 def loaded() -> bool:
-    return bool(_cache)
+    # NOT bool(_cache): a failed iGPU probe stores _cache["ov"] = None, which
+    # would otherwise report the model as resident forever and stop the
+    # idle-unload watchdog from ever firing.
+    return any(v is not None for v in _cache.values())
 
 
 def unload():
@@ -108,6 +151,11 @@ def _run(t: torch.Tensor) -> torch.Tensor:
     ph, pw = (-h) % _ALIGN, (-w) % _ALIGN
     if ph or pw:
         t = torch.nn.functional.pad(t, (0, pw, 0, ph), mode="reflect")
+    if t.shape[2] == TILE and t.shape[3] == TILE:
+        comp = _openvino_tile_model()
+        if comp is not None:
+            arr = comp(t.numpy())[comp.output(0)]
+            return torch.from_numpy(arr)[:, :, :h, :w].clamp(0, 1)
     out = _model()(t.to(_device())).cpu()
     return out[:, :, :h, :w].clamp(0, 1)
 
