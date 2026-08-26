@@ -616,10 +616,14 @@ async function importPhoto(startFn, name, btn) {
     // "helpful" that loses their place. A toast is the whole feedback.
     toast(`${name} queued`);
   } catch (e) {
+    // Only a FAILED import frees the button again, so it can be retried.
+    // On success it stays disabled: the request now returns in milliseconds
+    // instead of minutes, so re-enabling it meant a second tap on a photo
+    // that already looked queued would silently queue it a second time.
+    if (btn) { btn.disabled = false; btn.classList.remove('queued'); }
     renderLibrary();
     toast(`Could not process ${name}: ${e}`, true);
   } finally {
-    if (btn) btn.disabled = false;
     // Refresh the underlying list so the new photo is there when they go
     // back, without changing what is on screen right now.
     if (state.current) {
