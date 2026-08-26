@@ -278,12 +278,18 @@ def _start_import(user: str, name: str, work):
     """
     token = uuid.uuid4().hex
     entry = {"id": f"pending-{token}", "owner": user, "source_name": name,
-             "pending": True, "created_at": time.time(), "styles": [], "error": None}
+             "pending": True, "created_at": time.time(), "styles": [], "error": None,
+             # Set once the storage row exists, so /api/gallery can hide the
+             # half-built row behind this placeholder rather than show both.
+             "import_id": None}
     _pending_imports[token] = entry
+
+    def claim(import_id: str) -> None:
+        entry["import_id"] = import_id
 
     async def run():
         try:
-            await work()
+            await work(claim)
         except Exception as e:  # noqa: BLE001
             logger.warning("import failed for %s: %s", name, e)
             entry["error"] = str(e)[:200]
@@ -301,13 +307,14 @@ def _start_import(user: str, name: str, work):
 async def import_from_immich(asset_id: str, user: str = Depends(current_user)):
     name = f"Immich {asset_id[:8]}"
 
-    async def work():
+    async def work(claim):
         # Admission is taken BEFORE the fetch, so fifty queued imports hold
         # fifty queue slots rather than fifty full-resolution originals.
         async with pipeline.admission():
             data, filename = await immich_client.get_original_bytes(user, asset_id)
             await pipeline.process_preview(data, filename, source_type="immich",
-                                           username=user, immich_asset_id=asset_id)
+                                           username=user, immich_asset_id=asset_id,
+                                           on_created=claim)
 
     return JSONResponse({"queued": _start_import(user, name, work)})
 
@@ -319,9 +326,10 @@ async def import_upload(file: UploadFile = File(...), user: str = Depends(curren
     data = await file.read()
     name = file.filename or "upload"
 
-    async def work():
+    async def work(claim):
         async with pipeline.admission():
-            await pipeline.process_preview(data, name, source_type="upload", username=user)
+            await pipeline.process_preview(data, name, source_type="upload", username=user,
+                                           on_created=claim)
 
     return JSONResponse({"queued": _start_import(user, name, work)})
 
@@ -341,6 +349,12 @@ async def gallery_list(user: str = Depends(current_user)):
     a page refresh mid-import does not make the photo appear to vanish."""
     items = storage.list_imports(owner=user)
     waiting = [p for p in _pending_imports.values() if p["owner"] == user]
+    # A row is created partway through processing, while thumbnails and styles
+    # are still being written. Without this the same photo appeared twice for
+    # the rest of its import: once as a spinner, once as a tile you could click
+    # into and find half-built.
+    claimed = {p["import_id"] for p in waiting if p.get("import_id")}
+    items = [i for i in items if i["id"] not in claimed]
     return sorted(waiting, key=lambda p: -p["created_at"]) + items
 
 

@@ -510,7 +510,8 @@ async def _masks_for(import_id: str, baseline: torch.Tensor) -> tuple[dict, dict
 # ------------------------------------------------------------ entry points
 
 async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
-                          username: str, immich_asset_id: str | None = None) -> str:
+                          username: str, immich_asset_id: str | None = None,
+                          on_created=None) -> str:
     async with _pipeline_gate:
         arr = await asyncio.to_thread(_decode_full, raw_bytes, filename)
         tensor = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).contiguous()
@@ -548,6 +549,12 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
         small_baseline = await asyncio.to_thread(_resize_tensor, baseline, edge)
 
         import_id = storage.create_import(filename, source_type, immich_asset_id, owner=username)
+        # The row exists from here, but the photo is NOT finished: thumbnails
+        # and every style are still to come. Tell the caller which row this
+        # import owns so the gallery can keep showing one "processing" tile
+        # instead of a spinner and a half-built tile side by side.
+        if on_created:
+            on_created(import_id)
         await asyncio.to_thread(storage.save_denoise_info, import_id, denoise_meta)
 
         if source_type == "upload":
