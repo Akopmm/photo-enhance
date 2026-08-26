@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import os
 
@@ -266,24 +267,27 @@ async def immich_thumbnail(asset_id: str, user: str = Depends(current_user)):
 async def import_from_immich(asset_id: str, user: str = Depends(current_user)):
     # Admission is taken BEFORE the fetch, so 30 queued clicks hold 30 queue
     # slots rather than 30 full-resolution originals in memory.
-    async with pipeline.admission():
-        try:
-            data, filename = await immich_client.get_original_bytes(user, asset_id)
-        except immich_client.NoCredentials as e:
-            raise HTTPException(400, str(e))
-        except Exception as e:
-            raise HTTPException(502, f"could not fetch original from Immich: {e}")
-        import_id = await pipeline.process_preview(
-            data, filename, source_type="immich", username=user, immich_asset_id=asset_id)
-    return {"import_id": import_id}
+    with _pending(user, f"Immich {asset_id[:8]}"):
+        async with pipeline.admission():
+            try:
+                data, filename = await immich_client.get_original_bytes(user, asset_id)
+            except immich_client.NoCredentials as e:
+                raise HTTPException(400, str(e))
+            except Exception as e:
+                raise HTTPException(502, f"could not fetch original from Immich: {e}")
+            import_id = await pipeline.process_preview(
+                data, filename, source_type="immich", username=user,
+                immich_asset_id=asset_id)
+            return {"import_id": import_id}
 
 
 @app.post("/api/import/upload")
 async def import_upload(file: UploadFile = File(...), user: str = Depends(current_user)):
-    async with pipeline.admission():
-        data = await file.read()
-        import_id = await pipeline.process_preview(
-            data, file.filename, source_type="upload", username=user)
+    with _pending(user, file.filename or "upload"):
+        async with pipeline.admission():
+            data = await file.read()
+            import_id = await pipeline.process_preview(
+                data, file.filename, source_type="upload", username=user)
     return {"import_id": import_id}
 
 
@@ -298,7 +302,11 @@ def _owned(import_id: str, user: str):
 
 @app.get("/api/gallery")
 async def gallery_list(user: str = Depends(current_user)):
-    return storage.list_imports(owner=user)
+    """Stored imports, plus anything still being processed for this user, so
+    a page refresh mid-import does not make the photo appear to vanish."""
+    items = storage.list_imports(owner=user)
+    waiting = [p for p in _pending_imports.values() if p["owner"] == user]
+    return sorted(waiting, key=lambda p: -p["created_at"]) + items
 
 
 @app.get("/api/gallery/{import_id}")
@@ -403,6 +411,32 @@ async def gallery_render_full(import_id: str, style_key: str, crop: str | None =
     except Exception as e:
         raise HTTPException(502, f"could not render full-resolution image: {e}")
     return FileResponse(path, media_type="image/jpeg")
+
+
+# ---- in-flight imports ----
+#
+# An import only becomes a stored record once decode and the colour model
+# have finished, which is 15s on a clean photo and ~90s on a noisy one. Until
+# then the gallery had nothing to show, so the placeholder tile lived only in
+# the browser and a page refresh made the photo vanish -- it was still being
+# processed, just invisible. These are merged into /api/gallery so the tile
+# survives a reload.
+#
+# In memory on purpose: if the process dies the import dies with it, so a
+# persisted record would only ever be a lie that needed cleaning up.
+_pending_imports: dict[str, dict] = {}
+
+
+@contextlib.contextmanager
+def _pending(user: str, name: str):
+    token = uuid.uuid4().hex
+    _pending_imports[token] = {"id": f"pending-{token}", "owner": user,
+                               "source_name": name, "pending": True,
+                               "created_at": time.time(), "styles": []}
+    try:
+        yield
+    finally:
+        _pending_imports.pop(token, None)
 
 
 # ---- render jobs ----

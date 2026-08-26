@@ -165,6 +165,10 @@
           background: var(--surface-2); padding: 0; position: relative; }
   .pick img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .pick:disabled { opacity: .45; }
+  .pick.queued::after {
+    content: "✓"; position: absolute; inset: 0; display: grid; place-items: center;
+    background: #000A; color: var(--accent); font-size: 1.4rem; font-weight: 700;
+  }
   .drop {
     border: 2px dashed var(--line); border-radius: var(--radius); padding: 2rem 1rem;
     text-align: center; color: var(--text-dim);
@@ -427,6 +431,7 @@ const state = {
 };
 
 // ---------------------------------------------------------------- library
+let libraryPoll = null;
 async function loadLibrary() {
   const grid = $('lib-grid');
   try {
@@ -437,6 +442,12 @@ async function loadLibrary() {
     return;
   }
   renderLibrary();
+  // Keep refreshing while the server says something is still processing, so
+  // a finished photo appears without the user having to reload.
+  clearTimeout(libraryPoll);
+  if (state.imports.some(i => i.pending) && !state.current) {
+    libraryPoll = setTimeout(loadLibrary, 4000);
+  }
 }
 
 function renderLibrary() {
@@ -450,6 +461,16 @@ function renderLibrary() {
   }
   for (const p of pending) grid.appendChild(p);
   for (const imp of state.imports) {
+    // Still processing on the server: shown as a placeholder, and because
+    // the server reports it, this survives a page refresh.
+    if (imp.pending) {
+      const d = document.createElement('div');
+      d.className = 'tile pending';
+      d.innerHTML = `<div class="spinner"></div>
+                     <span class="cap">${escapeHtml(imp.source_name || 'photo')} — processing…</span>`;
+      grid.appendChild(d);
+      continue;
+    }
     const b = document.createElement('button');
     b.className = 'tile';
     b.innerHTML = `
@@ -501,8 +522,8 @@ function openPicker() {
       </div>
       <div data-pane="upload" hidden>
         <div class="drop" id="drop">
-          <p>Drop a CR3 / ARW / DNG / JPEG here</p>
-          <input type="file" id="file-input"
+          <p>Drop CR3 / ARW / DNG / JPEG files here — several at once is fine</p>
+          <input type="file" id="file-input" multiple
                  accept=".cr3,.arw,.dng,.cr2,.nef,.jpg,.jpeg,.png" />
         </div>
       </div>
@@ -568,8 +589,8 @@ function wireUpload(sheet) {
   const drop = sheet.querySelector('#drop');
   const input = sheet.querySelector('#file-input');
   input.addEventListener('change', e => {
-    const f = e.target.files[0];
-    if (f) sendUpload(f);
+    for (const f of e.target.files) sendUpload(f);
+    e.target.value = '';           // so re-picking the same file still fires
   });
   ['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => {
     e.preventDefault(); drop.classList.add('over');
@@ -578,8 +599,7 @@ function wireUpload(sheet) {
     e.preventDefault(); drop.classList.remove('over');
   }));
   drop.addEventListener('drop', e => {
-    const f = e.dataTransfer.files[0];
-    if (f) sendUpload(f);
+    for (const f of e.dataTransfer.files) sendUpload(f);
   });
 }
 function sendUpload(file) {
@@ -591,17 +611,18 @@ function sendUpload(file) {
 // One place for "a photo is being brought in": the tile appears in the
 // library immediately, so the work is visible where the result will land
 // rather than behind a tab you have to remember to visit.
+// The sheet STAYS OPEN. Picking one photo used to close it, which made
+// selecting a batch a matter of reopening the picker each time.
 async function importPhoto(startFn, name, btn) {
-  closePicker();
   const tile = addPendingTile(name);
-  if (btn) btn.disabled = true;
+  if (btn) { btn.disabled = true; btn.classList.add('queued'); }
   toast(`Processing ${name}…`);
   try {
     const res = await startFn();
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const { import_id } = await res.json();
     tile.remove();
-    const wasEditing = !!state.current;
+    const wasEditing = !!state.current || !!picker;
     if (wasEditing) {
       // Do NOT yank the user out of the photo they are working on. Imports
       // finish minutes later; jumping the view is the kind of "helpful" that
