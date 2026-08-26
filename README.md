@@ -36,6 +36,29 @@ The LUT model applies **one** colour mapping to every pixel, so it structurally 
 | Sky / scene | SegFormer-B0 / ADE20K | Coarse but fine for sky, which is graded softly anyway. Also reports what else is in the frame, which gates the other recipes |
 | Depth | [Depth Anything V2 Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf), 24.8M params, Apache-2.0 | Lightroom's Depth Range Mask. Grades by distance, so it still works where subject segmentation finds nothing |
 
+**Every model is permissive** (Apache-2.0 or MIT) as of 2026-08-26. SegFormer-B0 was replaced by
+UPerNet/ConvNeXt-tiny for that reason — the NVIDIA weights permit *"research or evaluation purposes
+only"*. Checked before swapping, on the masks the service actually consumes: foliage IoU 0.82/0.92
+across two photos, and while sky scored IoU 0.31, by eye UPerNet is the better of the two (SegFormer's
+sky came out patchy and leaked into blurred foreground). Costs 60M params against 3.8M, once per import.
+
+### Denoise
+
+[SCUNet](https://github.com/cszn/SCUNet) (Apache-2.0), the authors' **real-noise** model rather than a
+synthetic-Gaussian one — which is why it holds up on an actual high-ISO CR3. Measured on one: sigma
+4.0 → 0.8 across the frame and 8.1 → 0.3 at 1:1, with eyelashes and catchlights intact.
+
+`denoise_mode: auto` (default) measures the corrected baseline and only denoises above sigma 3, so
+clean frames are neither softened nor charged for it. This is the most expensive model in the service
+— unlike the others it has no internal downsampling — and a noisy import costs ~87 s on the deploy box
+against ~15 s for a clean one.
+
+**The amount is a live slider** because both baselines are stored, untouched and fully denoised: any
+amount is a blend between them, so it responds in ~46 ms with no model run. Full-resolution renders
+tile the model with feathered overlap (measured 0.14/255 mean difference from a single pass) and blend
+to the same amount — a denoised preview with a noisy download would be the same divergence bug the
+masking rework removed.
+
 Recipes: **Selective Colour** (subject in colour, background mono), **Subject Pop**, **Sky Drama**, **Depth Pop**, **Aerial Depth**, **Foliage**. Only the ones the photo can actually support are offered — Aerial Depth needs outdoor content, Foliage needs greenery, and the depth looks need the scene to span a depth range at all.
 
 **Masks are computed once and reused.** They are produced at 1024 px, persisted next to the import as PNG, and resampled to whatever the output needs. That is not a shortcut: BiRefNet resizes its input to 1024×1024 internally, so segmenting the full 6000 px image yields the same prediction upscaled. Previously the preview and the full-resolution download segmented independently and disagreed (measured 0.2120 vs 0.1873 sky coverage on one photo), so the file you downloaded was not the grade you approved.
