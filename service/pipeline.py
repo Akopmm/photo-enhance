@@ -94,7 +94,15 @@ def _thumb_edge() -> int:
 # thumbnails so the hero can be re-rendered from it at any look/strength and
 # still be sharp. ~250KB per import, and rendering a look over it is well
 # under the time it takes to drag a slider.
-HERO_EDGE = 1280
+HERO_EDGE = 1920
+
+# The import-time denoise runs at THIS size, not at HERO_EDGE, and its result
+# is scaled up to match. Denoise cost grows with pixel count, so tying it to
+# the hero would have made a bigger preview cost ~2x the import time on a
+# noisy photo. The preview's denoised half is therefore slightly softer than
+# a true full-size denoise -- which does not matter, because the download
+# re-runs the model at full resolution regardless.
+DENOISE_PREVIEW_EDGE = 1280
 
 # Output size presets. The long edge is what actually matters -- denoise cost
 # scales with pixel count, so halving the edge quarters the work, and the
@@ -518,7 +526,8 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
         # tiled, because a denoised preview and a noisy download would be the
         # same divergence bug we just removed from masking.
         hero_for_noise = await asyncio.to_thread(_resize_tensor, baseline, HERO_EDGE)
-        probe = hero_for_noise.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
+        dn_src = await asyncio.to_thread(_resize_tensor, hero_for_noise, DENOISE_PREVIEW_EDGE)
+        probe = dn_src.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
         do_dn, sigma = await asyncio.to_thread(_should_denoise, probe)
         default_amount = _default_denoise_amount(sigma)
         denoise_meta = {"available": bool(do_dn), "sigma": round(sigma, 2),
@@ -526,8 +535,16 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
         clean = None
         if do_dn:
             logger.info("denoising %s (sigma %.2f)", filename, sigma)
-            clean = await asyncio.to_thread(_denoise_full, probe)
-        probe = None
+            small_clean = await asyncio.to_thread(_denoise_full, probe)
+            # Back up to hero size so the two stored baselines match and the
+            # slider can blend between them.
+            ct = torch.from_numpy(small_clean).permute(2, 0, 1).unsqueeze(0)
+            ct = torch.nn.functional.interpolate(
+                ct, size=(hero_for_noise.shape[2], hero_for_noise.shape[3]),
+                mode="bilinear", align_corners=False)
+            clean = ct.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
+            small_clean = ct = None
+        probe = dn_src = None
         small_baseline = await asyncio.to_thread(_resize_tensor, baseline, edge)
 
         import_id = storage.create_import(filename, source_type, immich_asset_id, owner=username)
