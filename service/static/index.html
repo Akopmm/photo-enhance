@@ -620,18 +620,21 @@ async function importPhoto(startFn, name, btn) {
   try {
     const res = await startFn();
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const { import_id } = await res.json();
+    await res.json();
+    // The server has taken it and will finish on its own. The placeholder
+    // now comes from /api/gallery rather than this browser, so it survives a
+    // reload, and closing the tab no longer cancels the work.
     tile.remove();
+    await loadLibrary();
+    const import_id = null;
     const wasEditing = !!state.current || !!picker;
     if (wasEditing) {
       // Do NOT yank the user out of the photo they are working on. Imports
       // finish minutes later; jumping the view is the kind of "helpful" that
       // loses someone's place.
-      toast(`${name} is ready — it's in your library`);
+      toast(`${name} queued`);
     } else {
-      await loadLibrary();
-      toast('Ready');
-      openEditor(import_id);
+      toast(`${name} queued`);
     }
   } catch (e) {
     tile.remove();

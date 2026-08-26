@@ -263,32 +263,67 @@ async def immich_thumbnail(asset_id: str, user: str = Depends(current_user)):
 
 # ---- ingest ----
 
+def _start_import(user: str, name: str, work):
+    """Run an import in the background and return its placeholder id.
+
+    Imports used to BE the HTTP request, held open for the 15-90s the work
+    takes. That made every one of them fragile: a browser timeout, a closed
+    tab, a network blip or a container restart destroyed the work with no
+    trace and no error -- the photo simply never appeared. Fifty at once made
+    that near-certain.
+
+    Now the request returns immediately and the work continues server-side.
+    The placeholder is reported by /api/gallery, so the tile is visible from
+    any browser until the photo lands.
+    """
+    token = uuid.uuid4().hex
+    entry = {"id": f"pending-{token}", "owner": user, "source_name": name,
+             "pending": True, "created_at": time.time(), "styles": [], "error": None}
+    _pending_imports[token] = entry
+
+    async def run():
+        try:
+            await work()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("import failed for %s: %s", name, e)
+            entry["error"] = str(e)[:200]
+            entry["created_at"] = time.time()
+            # Leave the failure visible briefly rather than vanishing.
+            await asyncio.sleep(20)
+        finally:
+            _pending_imports.pop(token, None)
+
+    asyncio.create_task(run())
+    return entry["id"]
+
+
 @app.post("/api/import/immich/{asset_id}")
 async def import_from_immich(asset_id: str, user: str = Depends(current_user)):
-    # Admission is taken BEFORE the fetch, so 30 queued clicks hold 30 queue
-    # slots rather than 30 full-resolution originals in memory.
-    with _pending(user, f"Immich {asset_id[:8]}"):
+    name = f"Immich {asset_id[:8]}"
+
+    async def work():
+        # Admission is taken BEFORE the fetch, so fifty queued imports hold
+        # fifty queue slots rather than fifty full-resolution originals.
         async with pipeline.admission():
-            try:
-                data, filename = await immich_client.get_original_bytes(user, asset_id)
-            except immich_client.NoCredentials as e:
-                raise HTTPException(400, str(e))
-            except Exception as e:
-                raise HTTPException(502, f"could not fetch original from Immich: {e}")
-            import_id = await pipeline.process_preview(
-                data, filename, source_type="immich", username=user,
-                immich_asset_id=asset_id)
-            return {"import_id": import_id}
+            data, filename = await immich_client.get_original_bytes(user, asset_id)
+            await pipeline.process_preview(data, filename, source_type="immich",
+                                           username=user, immich_asset_id=asset_id)
+
+    return JSONResponse({"queued": _start_import(user, name, work)})
 
 
 @app.post("/api/import/upload")
 async def import_upload(file: UploadFile = File(...), user: str = Depends(current_user)):
-    with _pending(user, file.filename or "upload"):
+    # The body must be read HERE: it dies with the request, and the work now
+    # outlives the request.
+    data = await file.read()
+    name = file.filename or "upload"
+
+    async def work():
         async with pipeline.admission():
-            data = await file.read()
-            import_id = await pipeline.process_preview(
-                data, file.filename, source_type="upload", username=user)
-    return {"import_id": import_id}
+            await pipeline.process_preview(data, name, source_type="upload", username=user)
+
+    return JSONResponse({"queued": _start_import(user, name, work)})
 
 
 # ---- gallery (scoped to the signed-in user) ----
@@ -425,18 +460,6 @@ async def gallery_render_full(import_id: str, style_key: str, crop: str | None =
 # In memory on purpose: if the process dies the import dies with it, so a
 # persisted record would only ever be a lie that needed cleaning up.
 _pending_imports: dict[str, dict] = {}
-
-
-@contextlib.contextmanager
-def _pending(user: str, name: str):
-    token = uuid.uuid4().hex
-    _pending_imports[token] = {"id": f"pending-{token}", "owner": user,
-                               "source_name": name, "pending": True,
-                               "created_at": time.time(), "styles": []}
-    try:
-        yield
-    finally:
-        _pending_imports.pop(token, None)
 
 
 # ---- render jobs ----
