@@ -611,7 +611,7 @@ async function openEditor(importId) {
     $('denoise-panel').hidden = true;
   }
   $('hero-orig').src = `/api/gallery/${meta.id}/original_thumb.jpg`;
-  resetProgress();
+  paintProgress();
   renderGroups();
   renderFilm();
   renderCrops();
@@ -913,27 +913,56 @@ document.addEventListener('keydown', e => {
 });
 
 // ---------------------------------------------------------------- download
-function resetProgress() {
-  $('dl-progress').hidden = true;
-  $('dl-fill').style.width = '0%';
-  $('download').disabled = false;
-  $('download').textContent = 'Download full resolution';
-}
-function setProgress(pct, msg) {
+// Downloads are tracked PER PHOTO. The progress elements are single, shared
+// DOM nodes, so two concurrent downloads both wrote to them and the bar
+// flickered between the two jobs once a second. Now each job records its own
+// state, and only the photo currently open paints the bar; the others finish
+// quietly and announce themselves.
+const jobs = new Map();   // importId -> {pct, msg, state, name}
+
+function paintProgress() {
+  const id = state.current && state.current.id;
+  const j = id ? jobs.get(id) : null;
+  if (!j) {
+    $('dl-progress').hidden = true;
+    $('dl-fill').style.width = '0%';
+    $('download').disabled = false;
+    $('download').textContent = 'Download full resolution';
+    return;
+  }
   $('dl-progress').hidden = false;
-  $('dl-fill').style.width = Math.max(2, pct) + '%';
-  $('dl-msg').textContent = msg || '';
-  $('dl-pct').textContent = pct + '%';
+  $('dl-fill').style.width = Math.max(2, j.pct) + '%';
+  $('dl-msg').textContent = j.msg || '';
+  $('dl-pct').textContent = j.pct + '%';
+  const running = j.state === 'running';
+  $('download').disabled = running;
+  $('download').textContent = running ? 'Working…'
+    : (j.state === 'done' ? 'Download again' : 'Try again');
+}
+
+function resetProgress() {
+  const id = state.current && state.current.id;
+  if (id && (jobs.get(id) || {}).state !== 'running') jobs.delete(id);
+  paintProgress();
+}
+function setProgress(importId, pct, msg, st) {
+  const j = jobs.get(importId) || {};
+  jobs.set(importId, { ...j, pct, msg, state: st || j.state || 'running' });
+  paintProgress();
 }
 
 $('download').addEventListener('click', async () => {
   if (!state.current || !state.style) return;
-  const btn = $('download');
-  btn.disabled = true;
-  btn.textContent = 'Working…';
-  setProgress(2, 'Starting');
+  // Capture what is being downloaded NOW: the user may open another photo
+  // while this runs, and the job must not follow them.
+  const imp = state.current;
+  const name = `${(imp.source_name || 'photo').replace(/\.[^.]+$/, '')}`
+    + `_${state.style}${state.crop ? '_' + state.crop : ''}`
+    + `${state.strength < 100 ? '_' + state.strength + 'pct' : ''}`
+    + `${state.denoise !== null && state.denoise > 0 ? '_dn' + state.denoise : ''}.jpg`;
+
   const form = new FormData();
-  form.append('import_id', state.current.id);
+  form.append('import_id', imp.id);
   form.append('style_key', state.style);
   if (state.cropRect && !state.crop) {
     const r = state.cropRect;
@@ -943,46 +972,40 @@ $('download').addEventListener('click', async () => {
   }
   form.append('strength', (state.strength / 100).toFixed(2));
   if (state.denoise !== null) form.append('denoise', (state.denoise / 100).toFixed(2));
+
+  setProgress(imp.id, 2, 'Starting', 'running');
   try {
-    const start = await fetch('/api/render', { method: 'POST', body: form });
-    if (!start.ok) throw new Error(`HTTP ${start.status}`);
-    const { job_id } = await start.json();
-    const url = await pollJob(job_id);
-    setProgress(100, 'Downloading');
+    const res = await fetch('/api/render', { method: 'POST', body: form });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const { job_id } = await res.json();
+    const url = await pollJob(job_id, imp.id);
+    setProgress(imp.id, 100, 'Downloading', 'running');
     const blob = await fetch(url).then(r => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.blob();
     });
-    const name = `${(state.current.source_name || 'photo').replace(/\.[^.]+$/, '')}`
-      + `_${state.style}${state.crop ? '_' + state.crop : ''}`
-      + `${state.strength < 100 ? '_' + state.strength + 'pct' : ''}`
-      + `${state.denoise !== null && state.denoise !== 90 ? '_dn' + state.denoise : ''}.jpg`;
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(a.href);
-    setProgress(100, `Saved · ${(blob.size / 1048576).toFixed(1)} MB`);
-    btn.textContent = 'Download again';
-    btn.disabled = false;
-    toast('Saved ' + name);
+    setProgress(imp.id, 100, `Saved · ${(blob.size / 1048576).toFixed(1)} MB`, 'done');
+    toast(`Saved ${name}`);
   } catch (e) {
-    setProgress(0, 'Failed');
-    toast('Download failed: ' + e, true);
-    btn.disabled = false;
-    btn.textContent = 'Try again';
+    setProgress(imp.id, 0, 'Failed', 'error');
+    toast(`Download failed (${imp.source_name || 'photo'}): ${e}`, true);
   }
 });
 
-function pollJob(jobId) {
+function pollJob(jobId, importId) {
   return new Promise((resolve, reject) => {
     const tick = async () => {
       try {
         const j = await jget('/api/render/' + jobId);
         if (j.state === 'error') return reject(new Error(j.error || 'render failed'));
-        setProgress(j.pct ?? 0, j.message || '');
+        setProgress(importId, j.pct ?? 0, j.message || '', 'running');
         if (j.state === 'done') return resolve(j.url);
-        setTimeout(tick, 400);
+        setTimeout(tick, 600);
       } catch (e) { reject(e); }
     };
     tick();

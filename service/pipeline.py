@@ -203,7 +203,28 @@ def _should_denoise(arr: np.ndarray) -> tuple[bool, float]:
     sigma = dn.estimate_sigma(arr)
     if mode == "always":
         return True, sigma
+    # Offer it whenever there is anything to work with -- the slider and the
+    # preview blend are free. It is the DEFAULT AMOUNT that gets scaled by
+    # how noisy the photo really is (see _default_denoise_amount), because
+    # that is what costs minutes on a full-resolution download.
     return sigma >= float(settings.get("denoise_threshold") or 3.0), sigma
+
+
+def _default_denoise_amount(sigma: float) -> float:
+    """0 for a mildly noisy frame, ramping to the configured maximum by the
+    time it is genuinely bad.
+
+    A hard threshold defaulted a bright daylight portrait at sigma 4.4 to 90%
+    denoise, which bought little and cost ~126 tiles (5-8 minutes) on
+    download. The slider still goes to 100% if you want it; it just is not
+    the default for a photo that does not need it.
+    """
+    lo = float(settings.get("denoise_threshold") or 3.0) + 2.0
+    hi = lo + 3.0
+    top = float(settings.get("denoise_amount") or 0.9)
+    if sigma <= lo:
+        return 0.0
+    return round(min(top, top * (sigma - lo) / (hi - lo)), 2)
 
 
 def _denoise_full(arr: np.ndarray, progress=None) -> np.ndarray:
@@ -419,7 +440,7 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
         hero_for_noise = await asyncio.to_thread(_resize_tensor, baseline, HERO_EDGE)
         probe = hero_for_noise.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
         do_dn, sigma = await asyncio.to_thread(_should_denoise, probe)
-        default_amount = float(settings.get("denoise_amount") or 0.9)
+        default_amount = _default_denoise_amount(sigma)
         denoise_meta = {"available": bool(do_dn), "sigma": round(sigma, 2),
                         "amount": default_amount}
         clean = None
@@ -629,34 +650,45 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
 
     global_styles = {k: p for k, _l, p in _style_list()}
 
-    _say(3, "Waiting for a slot")
+    # Stage weights differ hugely depending on whether denoising runs: on a
+    # noisy photo the denoiser is most of the wall clock, so the bar has to
+    # give it most of the range or it crawls 50->78 for eight minutes and
+    # then jumps. Without denoise, the earlier stages get the room instead.
+    _dn_heavy = bool(_dn_meta.get("available")) and float(_dn_amt or 0) > 0
+    def _stage(pct_light, pct_heavy):
+        return pct_heavy if _dn_heavy else pct_light
+
+    _say(2, "Waiting for a slot")
     async with _render_gate, _pipeline_gate:
         if storage.full_render_exists(import_id, cache_key):
             _say(100, "Ready")
             return storage.full_render_path(import_id, cache_key)
 
-        _say(10, "Fetching the original")
+        _say(_stage(10, 4), "Fetching the original")
         raw_bytes, filename = await _get_original_bytes(import_id)
-        _say(25, "Decoding the RAW")
+        _say(_stage(25, 8), "Decoding the RAW")
         arr = await asyncio.to_thread(_decode_full, raw_bytes, filename)
         tensor = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).contiguous()
-        _say(45, "Colour model")
+        _say(_stage(45, 12), "Colour model")
         baseline = await runtime.infer(tensor)
         arr = tensor = None
 
         if _dn_meta.get("available") and float(_dn_amt) > 0:
-            _say(50, "Denoising")
+            _say(14, "Removing noise")
             base_np = baseline.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
 
             def _tile_progress(done, total):
-                _say(50 + int(28 * done / max(total, 1)), f"Denoising tile {done}/{total}")
+                # Plain language, and a range that matches the real cost:
+                # this stage is minutes, everything else is seconds.
+                _say(14 + int(70 * done / max(total, 1)),
+                     f"Removing noise ({round(100 * done / max(total, 1))}% of the frame)")
 
             clean = await asyncio.to_thread(_denoise_full, base_np, _tile_progress)
             merged = await asyncio.to_thread(_blend_denoise, base_np, clean, float(_dn_amt))
             baseline = torch.from_numpy(merged).permute(2, 0, 1).unsqueeze(0).contiguous()
             base_np = clean = merged = None
 
-        _say(60, "Applying the look")
+        _say(_stage(60, 88), "Applying the look")
         if style_key in global_styles:
             styled = await runtime.render_style(baseline, global_styles[style_key])
             if strength < 1.0:
@@ -683,7 +715,7 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
             jpeg = await asyncio.to_thread(_array_to_jpeg_bytes, out, _jpeg_quality())
 
         if rect:
-            _say(88, "Cropping")
+            _say(_stage(88, 93), "Cropping")
             full = np.asarray(Image.open(io.BytesIO(jpeg)).convert("RGB"))
             fh, fw = full.shape[:2]
             px = dict(x=rect["x"] * fw, y=rect["y"] * fh,
@@ -691,7 +723,7 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
             jpeg = await asyncio.to_thread(
                 _array_to_jpeg_bytes, cropping.apply_crop(full, px), _jpeg_quality())
         elif crop_key:
-            _say(88, "Cropping")
+            _say(_stage(88, 93), "Cropping")
             meta = storage.get_import(import_id) or {}
             crop = next((c for c in meta.get("crops", []) if c["key"] == crop_key), None)
             if crop is None:
@@ -702,7 +734,7 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
             jpeg = await asyncio.to_thread(
                 _array_to_jpeg_bytes, cropping.apply_crop(full, crop), _jpeg_quality())
 
-        _say(94, "Saving")
+        _say(_stage(94, 96), "Saving")
         await asyncio.to_thread(storage.save_full_render, import_id, cache_key, jpeg)
 
     await asyncio.to_thread(return_arenas_to_os)
