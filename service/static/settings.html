@@ -114,6 +114,11 @@
 <section class="admin-only">
   <h2>Processing (instance-wide)</h2>
   <form id="settings-form">
+    <!-- Names the checkboxes this form submits. Without it the server cannot
+         tell "unchecked" from "not part of this request", and any partial
+         POST silently switched every masking toggle off. -->
+    <input type="hidden" name="_checkbox_fields"
+           value="subject_masking,sky_masking,depth_masking,cinematic_presets" />
     <label for="mode">Mode</label>
     <select id="mode" name="mode">
       <option value="classic">Classic — global colour correction + style presets</option>

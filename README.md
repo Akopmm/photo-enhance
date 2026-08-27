@@ -249,8 +249,21 @@ cd service
 python3 -m venv .venv && source .venv/bin/activate
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
+
+# The denoiser's weights are baked into the Docker image but not committed
+# here (72MB). Without this step everything works except denoising, and
+# /health will say so: "denoise": {"weights": false}.
+python -c "import hashlib,os,urllib.request as u; \
+d='weights/scunet_color_real_psnr.pth'; os.makedirs('weights',exist_ok=True); \
+u.urlretrieve('https://huggingface.co/deepinv/scunet/resolve/main/scunet_color_real_psnr.pth', d); \
+h=hashlib.sha256(open(d,'rb').read()).hexdigest(); \
+print('ok' if h.startswith('fa78899ba2caec9d') else 'CHECKSUM MISMATCH')"
+
 uvicorn main:app --host 0.0.0.0 --port 5054
 ```
+
+The segmentation and depth models download themselves from Hugging Face on the first
+*enhanced*-mode import (~250MB, once).
 
 ### First run
 
@@ -299,6 +312,28 @@ Intel UHD 630, i.e. 1.7×). It costs
 ~680 MB of Intel driver mapped permanently into the process, so `denoise_device` can be set to `cpu`
 if you would rather have the memory. Gen9.5 hardware needs Intel's *legacy* 24.35 driver line; the
 Dockerfile pins it.
+
+## Testing
+
+Four suites, in increasing order of what they can catch:
+
+| suite | what it proves | needs |
+|---|---|---|
+| `smoke_test.py` | every route the UI calls is wired and returns | nothing |
+| `pending_test.py` | a photo being imported appears exactly once | nothing |
+| `e2e_test.py` | auth boundaries, per-user isolation, upload → render → delete, against a **running server** | a live instance |
+| `ui_test.py` | every control on the page actually does something, plus console/network errors | a live instance + playwright |
+
+The first three run in CI on every push. The UI suite needs a browser, so it is a
+pre-release check:
+
+```bash
+pip install playwright && playwright install chromium
+python ui_test.py --base http://127.0.0.1:5054 --photo /path/to/a/real/photo.jpg
+```
+
+Pass a real photograph rather than letting it generate one — a synthetic image gives
+segmentation nothing to find, so the region recipes never get exercised.
 
 ## Support
 

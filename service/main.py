@@ -191,8 +191,15 @@ async def get_settings(user: str = Depends(current_user)):
 @app.post("/api/settings")
 async def post_settings(request: Request, user: str = Depends(require_admin)):
     form = dict(await request.form())
-    for flag in ("subject_masking", "sky_masking", "depth_masking", "cinematic_presets"):
-        form[flag] = flag in form  # unchecked checkboxes simply aren't submitted
+    # An unchecked checkbox is not submitted at all, so "absent" has to mean
+    # False -- but ONLY for a form that actually contained that checkbox. The
+    # settings page says which ones it carries; anything else (a partial
+    # update from a script) leaves untouched flags alone. Treating every POST
+    # as a full form quietly turned all four masking toggles off whenever a
+    # single unrelated field was posted.
+    declared = form.pop("_checkbox_fields", "")
+    for flag in [f.strip() for f in str(declared).split(",") if f.strip()]:
+        form[flag] = flag in form
     return settings.update(form)
 
 
