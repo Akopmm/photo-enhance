@@ -323,6 +323,7 @@ Four suites, in increasing order of what they can catch:
 | `pending_test.py` | a photo being imported appears exactly once | nothing |
 | `e2e_test.py` | auth boundaries, per-user isolation, upload → render → delete, against a **running server** | a live instance |
 | `ui_test.py` | every control on the page actually does something, plus console/network errors | a live instance + playwright |
+| `mutation_test.py` | that the suite above can actually fail — breaks the product six ways and requires each break to be caught | nothing |
 
 The first three run in CI on every push. The UI suite needs a browser, so it is a
 pre-release check:
@@ -334,6 +335,14 @@ python ui_test.py --base http://127.0.0.1:5054 --photo /path/to/a/real/photo.jpg
 
 Pass a real photograph rather than letting it generate one — a synthetic image gives
 segmentation nothing to find, so the region recipes never get exercised.
+
+`mutation_test.py` is the one that keeps the others honest. A passing suite proves
+nothing by itself: a check that cannot fail looks exactly like a check that always
+passes. It disables the session check, removes the ownership check, un-masks the stored
+Immich key, reverts the settings-checkbox fix, drops the admin requirement and makes the
+strength parameter a no-op — and requires the suite to go red for each. It found a real
+hole doing so: strength is clamped separately in the preview and download paths, and only
+the preview was covered, so an export that ignored the slider passed clean.
 
 ## Support
 

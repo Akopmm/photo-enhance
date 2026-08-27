@@ -86,7 +86,10 @@ def make_photo():
     to find and the region recipes are actually exercised."""
     import numpy as np
     from PIL import Image
-    h, w = 900, 1350
+    # Deliberately larger than the 1800px 'small' preset edge: at 1350px
+    # nothing downscales, every size preset returns the same bytes, and the
+    # size check passes vacuously. Mutation testing surfaced exactly that.
+    h, w = 1700, 2550
     yy, xx = np.mgrid[0:h, 0:w]
     img = np.zeros((h, w, 3), np.float32)
     img[..., 2] = 0.55 - 0.25 * (yy / h)          # sky gradient at the top
@@ -255,6 +258,21 @@ def main():
     st, out = admin.get(f"/api/gallery/{iid}/{style}.jpg?size=small", raw=True)
     check("the rendered file downloads as a JPEG",
           st == 200 and out[:2] == b"\xff\xd8", f"{st}, {len(out) if isinstance(out,bytes) else '?'} bytes")
+    # The DOWNLOAD path clamps strength in render_full_style, which is a
+    # different function from the preview path. Mutation testing found that
+    # breaking it changed nothing any check could see: the preview comparison
+    # above passes happily while the exported file ignores the slider.
+    st, low = admin.get(f"/api/gallery/{iid}/{style}.jpg?size=small&strength=0.05", raw=True)
+    st2, high = admin.get(f"/api/gallery/{iid}/{style}.jpg?size=small&strength=1.0", raw=True)
+    check("strength reaches the downloaded file too",
+          st == 200 and st2 == 200 and low != high,
+          f"{st}/{st2}, {len(low) if isinstance(low,bytes) else '?'} vs {len(high) if isinstance(high,bytes) else '?'} bytes")
+    st, sm = admin.get(f"/api/gallery/{iid}/{style}.jpg?size=small", raw=True)
+    st2, md = admin.get(f"/api/gallery/{iid}/{style}.jpg?size=medium", raw=True)
+    check("the size preset changes the exported file",
+          st == 200 and st2 == 200 and len(md) != len(sm),
+          f"small={len(sm) if isinstance(sm,bytes) else '?'} medium={len(md) if isinstance(md,bytes) else '?'}"
+          " — if equal, the source may be smaller than both preset edges")
 
     print("\n-- crops --")
     st, cropped = admin.get(f"/api/gallery/{iid}/{style}_preview.jpg?crop_rect=0.1,0.1,0.6,0.6", raw=True)

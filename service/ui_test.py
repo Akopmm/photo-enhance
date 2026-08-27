@@ -67,7 +67,9 @@ def main():
         pg.fill("#u", a.user); pg.fill("#p", a.password); pg.click("#go")
         try:
             pg.wait_for_url(lambda u: not u.endswith("/login"), timeout=20000)
-            check("signing in reaches the library", True)
+            pg.wait_for_timeout(800)
+            check("signing in reaches the library",
+                  pg.query_selector("#lib-grid") is not None, pg.url)
         except Exception:
             return check("signing in reaches the library", False, pg.text_content("#msg") or "")
 
@@ -82,9 +84,15 @@ def main():
         fi = pg.query_selector("#file-input")
         if check("the upload control is present", fi is not None):
             fi.set_input_files(photo)
-            pg.wait_for_timeout(1500)
-            pg.keyboard.press("Escape")
-            check("uploading queues the photo", True)
+            pg.wait_for_timeout(2500)
+            pg.keyboard.press("Escape"); pg.wait_for_timeout(600)
+            # Assert the SERVER took it, not merely that the click happened:
+            # /api/gallery must now report something pending. "check(..., True)"
+            # here would pass even with the upload handler deleted.
+            queued = pg.evaluate(
+                "fetch('/api/gallery').then(r => r.json())"
+                ".then(g => g.some(i => i.pending))")
+            check("uploading actually queues it server-side", queued is True, str(queued))
 
         print("\n-- import shows progress then finishes --")
         seen_pending = False
@@ -122,12 +130,25 @@ def main():
             if el is None:
                 check(f"{label} is present", False); continue
             src_before = pg.get_attribute("#hero", "src")
-            pg.eval_on_selector(ctl, """el => { el.value = el.min;
+            # Move to whichever end is NOT where the slider already sits.
+            # Denoise defaults to 0 on a clean photo (the amount ramps with
+            # measured noise), so driving it to el.min set 0 to 0 and nothing
+            # re-rendered — the test failed while the control was fine.
+            moved = pg.eval_on_selector(ctl, """el => {
+                const lo = parseFloat(el.min), hi = parseFloat(el.max);
+                const cur = parseFloat(el.value);
+                const target = (cur - lo) <= (hi - cur) ? hi : lo;
+                if (target === cur) return false;
+                el.value = target;
                 el.dispatchEvent(new Event('input', {bubbles:true}));
-                el.dispatchEvent(new Event('change', {bubbles:true})); }""")
-            pg.wait_for_timeout(3000)
-            check(f"the {label} re-renders the photo",
-                  pg.get_attribute("#hero", "src") != src_before)
+                el.dispatchEvent(new Event('change', {bubbles:true}));
+                return true; }""")
+            pg.wait_for_timeout(3500)
+            if not moved:
+                check(f"the {label} could be moved", False, "slider min == max")
+            else:
+                check(f"the {label} re-renders the photo",
+                      pg.get_attribute("#hero", "src") != src_before)
 
         crops = pg.query_selector_all("#crops .chip, #crops button")
         check("crop ratios are offered (Instagram included)", len(crops) >= 7, f"{len(crops)} ratios")
