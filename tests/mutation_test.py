@@ -23,7 +23,8 @@ Two findings from writing it, both worth keeping in mind:
 """
 import os, shutil, subprocess, sys, tempfile, time, signal, json, urllib.request
 
-SRC = os.path.dirname(os.path.abspath(__file__))
+TESTS = os.path.dirname(os.path.abspath(__file__))
+SRC = os.path.join(os.path.dirname(TESTS), "service")
 PY = sys.executable
 PORT = int(os.environ.get("MUTATION_TEST_PORT", "5077"))
 
@@ -94,7 +95,11 @@ def stop(p):
 
 
 def suite(workdir):
-    r = run(f'"{PY}" e2e_test.py --base http://127.0.0.1:{PORT}', cwd=workdir)
+    # e2e_test.py is a pure HTTP client, so it runs from the real tests/
+    # directory and talks to the mutated server over the wire. It does not
+    # need to be inside the copied tree — and after tests moved out of
+    # service/ it no longer could be.
+    r = run(f'"{PY}" "{TESTS}/e2e_test.py" --base http://127.0.0.1:{PORT}', cwd=workdir)
     out = r.stdout + r.stderr
     failed = [l.strip()[5:].split("  —")[0].strip()
               for l in out.splitlines() if l.strip().startswith("FAIL")]

@@ -1,0 +1,19 @@
+# The build context is the repo root, and `COPY service/ ./service/` takes
+# everything under it — including a local virtualenv and any imported photos,
+# which is over a gigabyte and does not belong in a published image.
+service/.venv/
+service/data/
+**/__pycache__/
+**/*.pyc
+
+# Tests live at the repo root and are not copied in, but be explicit: the
+# image is a runtime artefact, and e2e/ui suites have no business inside it.
+tests/
+
+# Documentation and example images: useful in the repo, dead weight in a layer.
+docs/
+before-after/
+README.md
+docker-compose.example.yml
+.github/
+.git/

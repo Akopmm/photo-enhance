@@ -10,8 +10,9 @@ tmp = tempfile.mkdtemp(prefix="pe-claim-")
 os.environ["RENDER_STORAGE_DIR"] = os.path.join(tmp, "renders")
 os.environ.setdefault("PHOTO_ENHANCE_ADMIN_USER", "claimtest")
 os.environ.setdefault("PHOTO_ENHANCE_ADMIN_PASSWORD", "claimtest-password")
-here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, here); os.chdir(here)
+root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+here = os.path.join(root, "service")
+sys.path.insert(0, here); sys.path.insert(0, root); os.chdir(here)
 
 import main as app_module
 import storage

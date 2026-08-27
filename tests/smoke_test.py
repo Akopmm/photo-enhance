@@ -20,9 +20,10 @@ def main() -> int:
     os.environ["RENDER_STORAGE_DIR"] = os.path.join(tmp, "renders")
     os.environ.setdefault("PHOTO_ENHANCE_ADMIN_USER", "smoke")
     os.environ.setdefault("PHOTO_ENHANCE_ADMIN_PASSWORD", "smoke-password")
-    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    here = os.path.join(root, "service")
     sys.path.insert(0, here)
-    sys.path.insert(0, os.path.join(here, ".."))
+    sys.path.insert(0, root)
     # main.py mounts StaticFiles("static") relatively, as it does in the
     # container where /app/service is the working directory.
     os.chdir(here)
