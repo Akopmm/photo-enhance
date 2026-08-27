@@ -33,6 +33,44 @@ deploy box, a six-core i5-10500T with UHD 630 graphics.*
 
 ---
 
+## What it actually does to a photo
+
+Every image below is a real output, not a mock-up.
+
+**One photo, seven looks.** The base correction plus region-aware recipes — the subject, the sky and
+the foliage are graded separately, so "Selective Colour" can drop the background to mono while the
+bird keeps its colour.
+
+![Seven looks rendered from a single RAW file: the 3D-LUT baseline, Selective Colour, Subject Pop,
+Sky Drama, Depth Pop, Aerial Depth and Foliage](before-after/4_new_recipes_outdoor.jpg)
+
+**Small subjects still get found.** Here the bird is 0.87% of the frame. An earlier version's 1%
+floor rejected it and offered nothing but global styles.
+
+![A bird occupying under one percent of the frame, before and after Selective Colour
+grading](before-after/3_small_subject_rescued.jpg)
+
+**Soft alpha is the whole point of using BiRefNet.** A hard threshold destroys the graded edge that
+makes hair and feathers survive a region grade.
+
+![The same mask region before and after: hard stair-stepped edge versus soft retained
+gradation](before-after/1_mask_quality.jpg)
+
+And the same edge at full resolution, where the colour meets the mono background — a hard cut with a
+fixed 2.5px feather, against soft alpha with the feather scaled to the image:
+
+![The boundary between the colour subject and the mono background at 6000px, hard-cut versus soft
+alpha with a resolution-scaled feather](before-after/2_colour_mono_boundary.jpg)
+
+**Halos were a real bug, and the fix is measured.** `dehaze` used a fixed-radius blur, which is 1.67%
+of a 480px preview but 0.13% of a 6000px render — so the preview and the download disagreed, and wide
+mattes left a bright rim around the subject.
+
+![A go-kart before and after the halo fix: bright rim around the subject, then a choked matte with a
+resolution-scaled dehaze](before-after/7_halo_fix.jpg)
+
+---
+
 ## How it works
 
 ### The models
