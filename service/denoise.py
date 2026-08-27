@@ -1,4 +1,4 @@
-"""Denoising with SCUNet (Apache-2.0), on the model's corrected baseline.
+"""Denoising with SCUNet, on the model's corrected baseline.
 
 Why here, and why this model
 ----------------------------
@@ -13,9 +13,8 @@ actual camera file. Measured on that same photo: sigma 4.0 -> 0.8 full
 frame, 8.1 -> 0.3 at 1:1, with eyelashes, eyebrow hairs and catchlights
 intact -- it is not simply blurring.
 
-It is also the permissive choice, which was the other requirement. NAFNet is
-comparable and MIT, but its weights are only distributed via Google Drive,
-which cannot be fetched reproducibly at image build time.
+NAFNet is comparable, but its weights are only distributed via Google
+Drive, which cannot be fetched reproducibly at image build time.
 
 Cost
 ----

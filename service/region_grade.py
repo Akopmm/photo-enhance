@@ -85,7 +85,7 @@ def region_grade(arr: np.ndarray, regions: list, strength: float = 1.0) -> np.nd
 
 # ---------------------------------------------------------------- recipes
 
-# "Selective colour": the Lightroom effect where the subject keeps its colour
+# "Selective colour": the effect where the subject keeps its colour
 # and everything else drops to black & white.
 SELECTIVE_COLOR = {
     "background": dict(bw=True, contrast=0.18, dehaze=0.20, black_crush=0.03, vignette=0.25),
@@ -100,7 +100,7 @@ SKY_DRAMA = {
 }
 
 # Depth-based looks. These need no foreground/background decision at all --
-# they grade by distance, the way Lightroom's Depth Range Mask does, so they
+# they grade by distance rather than by object, so they
 # still work on the scenes where subject segmentation finds nothing to grab.
 DEPTH_POP = {
     "far": dict(exposure=0.90, desaturate=0.30, contrast=-0.04),

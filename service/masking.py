@@ -7,9 +7,9 @@ Three complementary mask sources, because no single model does all of it well:
               "Select Subject" equivalent and the best of the three.
   sky      -- UPerNet/ConvNeXt-tiny trained on ADE20K, which has a dedicated
               `sky` class. Also exposes other useful scene classes for free.
-  depth    -- Depth Anything V2 Small (24.8M, Apache-2.0). Lightroom's
-              "Depth Range Mask": grade by distance instead of by object,
-              which needs no foreground/background decision at all.
+  depth    -- Depth Anything V2 Small (24.8M). Grade by distance instead
+              of by object, which needs no foreground/background decision
+              at all.
 
 MASK_RESOLUTION and why masks are computed exactly once
 -------------------------------------------------------
@@ -173,10 +173,9 @@ ADE_CLASSES = {
 }
 
 
-# UPerNet/ConvNeXt-tiny rather than SegFormer-B0. Not for quality: the
-# NVIDIA licence on the SegFormer weights permits "research or evaluation
-# purposes only", which is incompatible with releasing this. UPerNet is MIT
-# and trained on the same ADE20K 150 classes.
+# UPerNet/ConvNeXt-tiny rather than SegFormer-B0, which the SegFormer
+# weights' terms ruled out for a public release. UPerNet is trained on the
+# same ADE20K 150 classes.
 #
 # Checked before swapping, on the masks this service actually consumes
 # (sky, and the tree/grass/plant union behind the Foliage look):

@@ -4,10 +4,10 @@
 
 ---
 
-### Self-hosted Lightroom alternative — five neural networks, no subscription, and nothing leaves your machine.
+### Automatic photo enhancement on your own server — five neural networks, no subscription, and nothing leaves your machine.
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-3c8039)](LICENSE)
-[![models](https://img.shields.io/badge/models-5%20%C2%B7%20Apache--2.0%20%2F%20MIT-3c8039)](#the-models)
+[![models](https://img.shields.io/badge/models-5%20neural%20networks-3c8039)](#the-models)
 [![hardware](https://img.shields.io/badge/runs%20on-CPU%20only-4a7ebb)](#running-it)
 [![docker](https://img.shields.io/badge/ghcr.io-photo--enhance-4a7ebb?logo=docker&logoColor=white)](#docker-recommended)
 [![build](https://img.shields.io/github/actions/workflow/status/Akopmm/photo-enhance/build.yml?branch=main&label=build)](https://github.com/Akopmm/photo-enhance/actions)
@@ -18,11 +18,11 @@
 
 ---
 
-A self-hosted, Lightroom-style photo enhancement service. Point it at a photo — Canon CR3, Sony ARW, or plain JPEG — and it predicts a colour/exposure correction with a small neural network, then renders **18 style variants** on top of it. In *enhanced* mode it also segments the photo — subject, sky, foliage and depth — so those can be graded separately, and suggests compositional crops.
+A self-hosted photo enhancement service. Point it at a photo — Canon CR3, Sony ARW, or plain JPEG — and it predicts a colour/exposure correction with a small neural network, then renders **18 style variants** on top of it. In *enhanced* mode it also segments the photo — subject, sky, foliage and depth — so those can be graded separately, and suggests compositional crops.
 
-Runs on a home server. Nothing leaves the machine, and every model is Apache-2.0 or MIT.
+Runs on a home server. Nothing leaves the machine.
 
-Built as a personal alternative to an Adobe Lightroom subscription.
+Built to replace a monthly photo-editing subscription.
 
 ![The full path of a RAW file through photo-enhance: five neural networks and one look engine,
 showing which run on the CPU and which on the integrated GPU](docs/pipeline.jpg)
@@ -37,7 +37,7 @@ deploy box, a six-core i5-10500T with UHD 630 graphics.*
 
 ### The models
 
-A small CNN (~600K parameters) based on [*Learning Image-Adaptive 3D Lookup Tables for High Performance Photo Enhancement in Real-time*](https://github.com/HuiZeng/Image-Adaptive-3DLUT) (Zeng et al., Apache-2.0). It looks at a downsampled copy of the photo and predicts how to blend a handful of learned 3D colour lookup tables into one image-specific correction.
+A small CNN (~600K parameters) based on [*Learning Image-Adaptive 3D Lookup Tables for High Performance Photo Enhancement in Real-time*](https://github.com/HuiZeng/Image-Adaptive-3DLUT) (Zeng et al.). It looks at a downsampled copy of the photo and predicts how to blend a handful of learned 3D colour lookup tables into one image-specific correction.
 
 `service/weights/model.pt` ships **that paper's own published pretrained weights** (sRGB variant, converted into this repo's state-dict layout; originals from the authors' `pretrained_models/sRGB/`). The LUT application is reimplemented with `torch.nn.functional.grid_sample` instead of the original repo's CUDA-only compiled extension, so the identical model runs on plain CPU, Apple Silicon (MPS) or an Intel iGPU (OpenVINO) with no GPU-specific build step.
 
@@ -57,19 +57,18 @@ The LUT model applies **one** colour mapping to every pixel, so it structurally 
 
 | Mask | Model | Notes |
 |---|---|---|
-| Subject | [BiRefNet-lite](https://github.com/zhengpeng7/birefnet), 44M params, MIT | Crisp cutouts; the "Select Subject" equivalent |
-| Sky / scene | [UPerNet / ConvNeXt-tiny](https://huggingface.co/openmmlab/upernet-convnext-tiny), 60.2M params, MIT | ADE20K's 150 classes: the sky mask, the foliage union (tree ∪ grass ∪ plant), and the scene inventory that decides which looks are offered at all |
-| Depth | [Depth Anything V2 Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf), 24.8M params, Apache-2.0 | Lightroom's Depth Range Mask. Grades by distance, so it still works where subject segmentation finds nothing |
+| Subject | [BiRefNet-lite](https://github.com/zhengpeng7/birefnet), 44M params | Crisp cutouts; the "Select Subject" equivalent |
+| Sky / scene | [UPerNet / ConvNeXt-tiny](https://huggingface.co/openmmlab/upernet-convnext-tiny), 60.2M params | ADE20K's 150 classes: the sky mask, the foliage union (tree ∪ grass ∪ plant), and the scene inventory that decides which looks are offered at all |
+| Depth | [Depth Anything V2 Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf), 24.8M params | Grades by distance rather than by object, so it still works where subject segmentation finds nothing |
 
-**Every model is permissive** (Apache-2.0 or MIT) as of 2026-08-26. SegFormer-B0 was replaced by
-UPerNet/ConvNeXt-tiny for that reason — the NVIDIA weights permit *"research or evaluation purposes
-only"*. Checked before swapping, on the masks the service actually consumes: foliage IoU 0.82/0.92
-across two photos, and while sky scored IoU 0.31, by eye UPerNet is the better of the two (SegFormer's
-sky came out patchy and leaked into blurred foreground). Costs 60M params against 3.8M, once per import.
+UPerNet/ConvNeXt-tiny replaced SegFormer-B0 here. Compared before swapping, on the masks the service
+actually consumes: foliage IoU 0.82/0.92 across two photos, and while sky scored IoU 0.31, by eye
+UPerNet is the better of the two — SegFormer's sky came out patchy and leaked into blurred
+foreground. Costs 60M params against 3.8M, once per import.
 
 ### Denoise
 
-[SCUNet](https://github.com/cszn/SCUNet) (Apache-2.0), the authors' **real-noise** model rather than a
+[SCUNet](https://github.com/cszn/SCUNet), the authors' **real-noise** model rather than a
 synthetic-Gaussian one — which is why it holds up on an actual high-ISO CR3. Measured on one: sigma
 4.0 → 0.8 across the frame and 8.1 → 0.3 at 1:1, with eyelashes and catchlights intact.
 
@@ -263,45 +262,21 @@ Two things worth knowing if you train:
 
 ---
 
-## Models and licences
+## The models
 
-| stage | model | params | licence | device |
-|---|---|---|---|---|
-| Colour | Image-Adaptive-3DLUT | 593 K | Apache-2.0 | CPU |
-| Denoise | SCUNet (real-noise) | 17.9 M | Apache-2.0 | iGPU, falls back to CPU |
-| Subject | BiRefNet-lite | 44 M | MIT | CPU |
-| Scene / sky | UPerNet ConvNeXt-T | 60.2 M | MIT | CPU |
-| Depth | Depth Anything V2 Small | 24.8 M | Apache-2.0 | CPU |
-
-All permissive. SegFormer was used for scene segmentation until its NVIDIA licence — *"research or
-evaluation purposes only"* — made it unsuitable; UPerNet replaced it and produced a **better** sky
-mask in the comparison.
+| stage | model | params | device |
+|---|---|---|---|
+| Colour | Image-Adaptive-3DLUT | 593 K | CPU |
+| Denoise | SCUNet (real-noise) | 17.9 M | iGPU, falls back to CPU |
+| Subject | BiRefNet-lite | 44 M | CPU |
+| Scene / sky | UPerNet ConvNeXt-T | 60.2 M | CPU |
+| Depth | Depth Anything V2 Small | 24.8 M | CPU |
 
 Only the denoiser uses the integrated GPU, because it is the only model with no internal
 downsampling and therefore the only one genuinely compute-bound (2.52× on an Intel UHD 630). It costs
 ~680 MB of Intel driver mapped permanently into the process, so `denoise_device` can be set to `cpu`
 if you would rather have the memory. Gen9.5 hardware needs Intel's *legacy* 24.35 driver line; the
 Dockerfile pins it.
-
-### If you want to use this commercially
-
-The models are the easy part — all five are Apache-2.0 or MIT. Three other things deserve a look, in
-descending order of how much they matter. **None of this is legal advice.**
-
-1. **LibRaw is LGPL-2.1 / CDDL-1.0** (dual, with a paid commercial option). It is what actually
-   decodes your CR3 files, reached through `rawpy` — `rawpy` itself is MIT, but the decoder underneath
-   is not. Running this **as a service** does not trigger distribution obligations at all. Shipping it
-   as a **closed-source binary** does: you would need to keep LibRaw dynamically linked and allow
-   relinking, or buy LibRaw's commercial licence.
-2. **The shipped 3D-LUT weights were trained on MIT-Adobe FiveK**, whose dataset terms are
-   research-oriented. The architecture's Apache-2.0 licence covers the code, not the question of what
-   the weights were learned from. Avoidable if it matters: retrain the LUT on permissively licensed
-   pairs — `training/` already does exactly this.
-3. **BiRefNet's weights card declares no licence**, even though its code repository is MIT. Worth an
-   upstream issue asking them to state it explicitly.
-
-Everything else in the runtime is permissive: torch, numpy and Pillow are BSD-family; transformers,
-timm, kornia, OpenVINO and python-multipart are Apache-2.0; FastAPI, einops and rawpy are MIT.
 
 ## Support
 
@@ -314,6 +289,7 @@ everything runs on CPU or an Intel iGPU today, so an idle GPU in a server curren
 
 ## License
 
-Apache-2.0 (see `LICENSE`), matching the original Image-Adaptive-3DLUT repository this project's
-architecture and shipped weights come from. Vendored third-party code carries its own notice — see
-`service/vendor/NOTICE` for SCUNet.
+Apache-2.0 — see [`LICENSE`](LICENSE).
+
+Built on the Image-Adaptive-3DLUT architecture and its pretrained weights, and on vendored SCUNet
+code, whose notice is kept at `service/vendor/NOTICE`.

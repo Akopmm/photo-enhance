@@ -57,7 +57,7 @@ ov.save_model(ovm, '/app/service/weights/birefnet_lite.xml'); \
 import os; \
 print('birefnet IR', os.path.getsize('/app/service/weights/birefnet_lite.bin')//1024//1024, 'MB')"
 
-# SCUNet denoise weights (Apache-2.0, the authors' real-noise model). Not a
+# SCUNet denoise weights (the authors' real-noise model). Not a
 # transformers model, so fetched directly. python:3.12-slim has no curl, and
 # the checksum is verified in the same step -- a silently swapped 72MB tensor
 # file would be hard to notice from the output alone.

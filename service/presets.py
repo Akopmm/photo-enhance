@@ -1,5 +1,5 @@
 """Deterministic look/style presets applied on top of the model's corrected
-baseline image, producing several distinct Lightroom-style variants per
+baseline image, producing several distinct look variants per
 photo instead of training a separate model per style.
 
 Reimplemented in PyTorch (was plain numpy) so the whole pipeline -- model
