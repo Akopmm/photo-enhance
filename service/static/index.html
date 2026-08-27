@@ -526,6 +526,23 @@ function openPicker() {
   sheet.querySelector('#album-select').addEventListener('change', e => loadImmich(e.target.value, true));
   sheet.querySelector('#load-more').addEventListener('click', () => loadImmich(immich.album, false));
   wireUpload(sheet);
+
+  // With no Immich configured, the "From Immich" pane used to open first,
+  // fire two requests that both 400, and then just sit there empty. That is
+  // every new user's first click, since Immich is optional and unset by
+  // default. Open on Upload instead, and say why.
+  if (state.immichReady === false) {
+    const tabs = [...sheet.querySelectorAll('[role=tab]')];
+    tabs.forEach(t => t.setAttribute('aria-selected', String(t.dataset.src === 'upload')));
+    sheet.querySelectorAll('[data-pane]').forEach(p => { p.hidden = p.dataset.pane !== 'upload'; });
+    const pane = sheet.querySelector('[data-pane="immich"]');
+    pane.innerHTML = `<div class="empty" style="padding:2rem 1rem">
+      <p>No Immich library connected yet.</p>
+      <p style="font-size:.9rem">Add your Immich address and an API key in
+      <a href="/settings">Settings</a> to browse your library here. Uploading files works without it.</p>
+    </div>`;
+    return;
+  }
   loadAlbums();
   loadImmich('', true);
 }
@@ -1161,6 +1178,7 @@ function pollJob(jobId, importId) {
 (async function boot() {
   try {
     const me = await jget('/api/me');
+    state.immichReady = !!(me.immich_api_key_set && me.immich_url);
     $('whoami').textContent = me.username || '';
   } catch (e) { /* the page is behind auth anyway */ }
   try { state.catalogue = await jget('/api/styles'); } catch (e) { state.catalogue = []; }

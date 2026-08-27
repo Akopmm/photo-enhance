@@ -5,7 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>photo-enhance · settings</title>
 <style>
-  :root { color-scheme: light dark; }
+  /* Dark, to match the editor. These pages are otherwise theme-agnostic
+     (transparent backgrounds, `color: inherit`, alpha borders), so they used
+     to follow the OS -- which meant a light-mode visitor got white sign-in,
+     dark app, white settings as they clicked around. */
+  :root { color-scheme: dark; }
   body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 1rem;
          max-width: 720px; margin-inline: auto; }
   header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }

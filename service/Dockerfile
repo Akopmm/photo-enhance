@@ -86,8 +86,9 @@ sys.exit(0 if h.startswith('fa78899ba2caec9d') else 1)"
 #  2. intel-opencl-icd-legacy1 pins an exact IGC build (1.0.17537.24). Pairing
 #     it with a newer IGC leaves the OpenCL ICD unconfigured.
 #
-# Measured on optiplex once working: SCUNet 9.75s -> 3.86s per 512px tile,
-# a 2.52x speedup.
+# Measured once working, on an idle box: SCUNet 5.67s -> 3.39s per 512px
+# tile, a 1.7x speedup. (An earlier 9.75 -> 3.86 / 2.52x recorded here was
+# taken while the machine was busy and overstated both ends.)
 ARG CR=24.35.30872.36
 ARG IGC=1.0.17537.24
 RUN set -eux; \

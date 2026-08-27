@@ -297,7 +297,7 @@ def _default_denoise_amount(sigma: float) -> float:
     time it is genuinely bad.
 
     A hard threshold defaulted a bright daylight portrait at sigma 4.4 to 90%
-    denoise, which bought little and cost ~126 tiles (5-8 minutes) on
+    denoise, which bought little and cost ~126 tiles (~7 minutes on the iGPU) on
     download. The slider still goes to 100% if you want it; it just is not
     the default for a photo that does not need it.
     """

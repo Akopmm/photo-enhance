@@ -5,7 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>photo-enhance · sign in</title>
 <style>
-  :root { color-scheme: light dark; }
+  /* Dark, to match the editor. These pages are otherwise theme-agnostic
+     (transparent backgrounds, `color: inherit`, alpha borders), so they used
+     to follow the OS -- which meant a light-mode visitor got white sign-in,
+     dark app, white settings as they clicked around. */
+  :root { color-scheme: dark; }
   body { font-family: -apple-system, system-ui, sans-serif; margin: 0;
          min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; }
   .card { width: 100%; max-width: 360px; border: 1px solid #8883; border-radius: 12px; padding: 1.5rem; }

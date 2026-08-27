@@ -141,6 +141,18 @@ Deliberately rules, not a learned aesthetics model — that would be another ~10
 
 ### The editor
 
+![The photo-enhance editor: a graded photo with the look filmstrip, strength and denoise sliders,
+download size presets and crop ratios](docs/ui-editor.jpg)
+
+Looks are grouped: the ones this photo can actually take (its region recipes), then the global
+Signature and Cinematic sets. Strength dials a region recipe back toward the ungraded image, and
+denoise is a live blend between two stored baselines, so moving either slider costs nothing.
+
+![The library on a phone, and the editor on a phone](docs/ui-mobile.jpg)
+
+It is built to be used from a phone — that is where you are when you want the photo.
+
+
 Two screens: a **Library** of your photos, and an **Editor** you open one into. On a wide screen the
 photo sits left and every control right, so you never scroll between the image and the thing that
 changes it.
@@ -311,7 +323,8 @@ Two things worth knowing if you train:
 | Depth | Depth Anything V2 Small | 24.8 M | CPU |
 
 Only the denoiser uses the integrated GPU, because it is the only model with no internal
-downsampling and therefore the only one genuinely compute-bound (2.52× on an Intel UHD 630). It costs
+downsampling and therefore the only one genuinely compute-bound (5.67 → 3.39 s per 512 px tile on an
+Intel UHD 630, i.e. 1.7×). It costs
 ~680 MB of Intel driver mapped permanently into the process, so `denoise_device` can be set to `cpu`
 if you would rather have the memory. Gen9.5 hardware needs Intel's *legacy* 24.35 driver line; the
 Dockerfile pins it.
