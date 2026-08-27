@@ -18,6 +18,12 @@ experiments/
 # Dockerfile and checksum-verified there; they are not committed.
 service/weights/scunet_color_real_psnr.pth
 
+# OpenVINO IRs, built inside the image (BiRefNet ~89MB, SCUNet ~35MB) and
+# also produced locally by anyone who runs the conversion by hand. Build
+# output, never source.
+service/weights/*.xml
+service/weights/*.bin
+
 # Family photos and anything derived from them stay out of the repo -- this
 # may become public, and the demo material should be the bird, not a child.
 before-after/baby_*

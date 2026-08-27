@@ -26,12 +26,32 @@ measured 0.2120 vs 0.1873 sky coverage on the same photo. The gallery
 showed one grade and the download produced another. Computing once and
 resampling makes them identical by construction.
 """
+import logging
+import os
+
 import numpy as np
 import torch
 import torchvision.transforms as T
 from PIL import Image, ImageFilter
 
+logger = logging.getLogger("photo-enhance.masking")
+
 _cache = {}
+
+# BiRefNet compiled by OpenVINO. Its input is ALWAYS 1x3x1024x1024 (see
+# MASK_RESOLUTION above), and a static shape is what makes OpenVINO worth
+# using at all. Measured on optiplex, same weights, same box:
+#
+#     torch CPU      12.00 s      OpenVINO CPU   2.20 s   5.4x
+#                                 OpenVINO GPU   2.30 s
+#
+# CPU deliberately, not the iGPU: it is fractionally faster here AND it
+# leaves the GPU entirely to the denoiser, which is the one model that
+# genuinely needs it. The IR is built into the image next to the weights;
+# without it this falls back to torch and nothing breaks.
+BIREFNET_IR = os.environ.get(
+    "BIREFNET_IR_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "weights", "birefnet_lite.xml"))
 
 # Long edge at which every mask is computed. 1024 is BiRefNet's own working
 # resolution, so this is its native precision rather than a compromise.
@@ -68,6 +88,48 @@ def _birefnet():
     return _cache["birefnet"]
 
 
+def _birefnet_ov():
+    """The OpenVINO build, or None to fall back to torch.
+
+    Cached as None on failure so a missing IR or an unusable OpenVINO is
+    probed once per process rather than on every photo.
+    """
+    if "birefnet_ov" in _cache:
+        return _cache["birefnet_ov"]
+    _cache["birefnet_ov"] = None
+    try:
+        # Only when torch would otherwise be on the CPU. OpenVINO has no
+        # Metal backend, so on Apple silicon it loses badly to torch on MPS
+        # -- measured on the same photo, 18.64s (OpenVINO CPU) against 2.77s
+        # (torch MPS). Preferring it there would be a 6.7x pessimisation.
+        if _device() != "cpu":
+            logger.info("birefnet: torch has %s, skipping OpenVINO", _device())
+            return None
+        if not os.path.exists(BIREFNET_IR):
+            logger.info("birefnet: no OpenVINO IR at %s, using torch", BIREFNET_IR)
+            return None
+        import openvino as ov
+        core = ov.Core()
+        m = core.read_model(BIREFNET_IR)
+        # convert_model leaves the spatial dims dynamic; the GPU plugin
+        # refuses that outright ("to_shape was called on a dynamic shape")
+        # and the CPU plugin gives up its best kernels. Pin it.
+        m.reshape({m.input(0): ov.PartialShape([1, 3, MASK_RESOLUTION, MASK_RESOLUTION])})
+        _cache["birefnet_ov"] = core.compile_model(m, "CPU")
+        logger.info("birefnet: OpenVINO CPU build compiled from %s", BIREFNET_IR)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("birefnet: OpenVINO unavailable (%s), using torch", e)
+        _cache["birefnet_ov"] = None
+    return _cache["birefnet_ov"]
+
+
+_BIREFNET_TF = T.Compose([
+    T.Resize((MASK_RESOLUTION, MASK_RESOLUTION)),
+    T.ToTensor(),
+    T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+])
+
+
 @torch.no_grad()
 def subject_mask(img: Image.Image) -> np.ndarray:
     """Soft alpha, float32 (H, W) in [0,1] at MASK_RESOLUTION -- 1 = subject.
@@ -76,15 +138,18 @@ def subject_mask(img: Image.Image) -> np.ndarray:
     edges is the whole reason to run BiRefNet rather than something cheap,
     and a hard cut is the one operation that destroys it.
     """
-    m = _birefnet()
     small = _at_working_size(img.convert("RGB"))
-    tf = T.Compose([
-        T.Resize((1024, 1024)),
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    ])
-    x = tf(small).unsqueeze(0).to(_device())
-    pred = m(x)[-1].sigmoid().cpu()[0].squeeze().numpy()
+    x = _BIREFNET_TF(small).unsqueeze(0)
+
+    comp = _birefnet_ov()
+    if comp is not None:
+        # The converted graph exposes the single output that corresponds to
+        # torch's m(x)[-1]; verified identical to 2.9e-08 on real photos.
+        logits = comp(x.numpy())[comp.output(len(comp.outputs) - 1)]
+        pred = 1.0 / (1.0 + np.exp(-np.asarray(logits, dtype=np.float32)))
+        pred = pred[0].squeeze().astype(np.float32)
+    else:
+        pred = _birefnet()(x.to(_device()))[-1].sigmoid().cpu()[0].squeeze().numpy()
     return _resize_mask(pred, small.size)
 
 

@@ -36,6 +36,27 @@ AutoImageProcessor.from_pretrained('depth-anything/Depth-Anything-V2-Small-hf');
 AutoModelForDepthEstimation.from_pretrained('depth-anything/Depth-Anything-V2-Small-hf'); \
 print('segmentation + depth weights cached')"
 
+# Compile BiRefNet to an OpenVINO IR at build time.
+#
+# BiRefNet's input is always 1x3x1024x1024, and with that shape pinned
+# OpenVINO runs it 5.4x faster than PyTorch on the same CPU (12.00s -> 2.20s
+# on optiplex), producing masks identical to 2.9e-08. It is 32% of an import,
+# so this is the single largest saving in the pipeline.
+#
+# Built here rather than on first use because conversion takes ~70s, which
+# would otherwise be paid by whoever imports the first photo after a deploy.
+# convert_model leaves the spatial dims dynamic; reshape pins them, which the
+# GPU plugin requires outright and the CPU plugin needs for its best kernels.
+RUN python -c "\
+import torch, openvino as ov; \
+from transformers import AutoModelForImageSegmentation; \
+m=AutoModelForImageSegmentation.from_pretrained('ZhengPeng7/BiRefNet_lite', trust_remote_code=True).eval(); \
+ovm=ov.convert_model(m, example_input=torch.zeros(1,3,1024,1024)); \
+ovm.reshape({ovm.input(0): ov.PartialShape([1,3,1024,1024])}); \
+ov.save_model(ovm, '/app/service/weights/birefnet_lite.xml'); \
+import os; \
+print('birefnet IR', os.path.getsize('/app/service/weights/birefnet_lite.bin')//1024//1024, 'MB')"
+
 # SCUNet denoise weights (Apache-2.0, the authors' real-noise model). Not a
 # transformers model, so fetched directly. python:3.12-slim has no curl, and
 # the checksum is verified in the same step -- a silently swapped 72MB tensor
@@ -49,6 +70,22 @@ urllib.request.urlretrieve(url, dst); \
 h=hashlib.sha256(open(dst,'rb').read()).hexdigest(); \
 print('scunet sha256', h, os.path.getsize(dst)//1024, 'KB'); \
 sys.exit(0 if h.startswith('fa78899ba2caec9d') else 1)"
+
+# Convert SCUNet to an OpenVINO IR here, not at runtime.
+#
+# `ov.convert_model` on SCUNet needs **more than 12 GB** (measured: a 12 GB
+# container is OOM-killed doing it). optiplex has 15 GB total and also runs
+# Immich, Jellyfin and AdGuard, so paying that at runtime risks the kernel
+# killing something else on the box -- and it stalled the first denoise after
+# every deploy by ~35 s. A build runner has the headroom; the box does not.
+RUN python -c "\
+import sys, os, torch, openvino as ov; \
+sys.path.insert(0, '/app/service'); \
+os.chdir('/app/service'); \
+import denoise; \
+ov.save_model(ov.convert_model(denoise._model(), example_input=torch.zeros(1,3,512,512)), \
+              '/app/service/weights/scunet_tile.xml'); \
+print('scunet IR', os.path.getsize('/app/service/weights/scunet_tile.bin')//1024//1024, 'MB')"
 
 # --- Intel iGPU compute runtime (optional acceleration for the denoiser) ---
 #
@@ -88,6 +125,11 @@ RUN set -eux; \
 # Models are baked above, so don't reach out to the Hub at runtime -- a
 # network hiccup should never turn into a failed import.
 ENV HF_HUB_OFFLINE=1
+
+# A missing or unloadable IR degrades to torch SILENTLY -- 5.4x slower with
+# no error anywhere. That is exactly the failure mode the offline model guard
+# exists to prevent, so fail the build instead.
+RUN cd /app/service && python birefnet_parity.py
 
 WORKDIR /app/service
 ENV PYTHONUNBUFFERED=1

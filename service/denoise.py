@@ -28,6 +28,7 @@ and preview inherits the result for free. Full-resolution renders tile it.
 import logging
 import os
 import sys
+import threading
 
 import numpy as np
 import torch
@@ -47,6 +48,21 @@ _ALIGN = 8
 # denoising is most visible.
 TILE = 512
 OVERLAP = 64
+
+# Full-resolution renders tile a 6000x4000 frame into 126 tiles and, until
+# now, ran them one at a time on one device while the other sat idle. The
+# tiles are independent, so both can work. Measured on optiplex:
+#
+#     sequential iGPU     3.47 s/tile   7.3 min for 6000x4000
+#     iGPU + CPU          2.79 s/tile   5.9 min          1.25x
+#
+# Short of the 1.79x the per-device rates imply, because OpenVINO's CPU
+# inference competes for the very cores the GPU driver needs on the host
+# side -- but a real 19% off the longest wait in the product.
+#
+# Only for big jobs: a second compiled copy of SCUNet costs resident memory,
+# and an import (6 tiles) does not run long enough to earn that back.
+HYBRID_MIN_TILES = 16
 
 
 # auto | cpu | gpu. "auto" uses the Intel iGPU through OpenVINO when a driver
@@ -68,39 +84,90 @@ def _device():
     return "mps" if torch.backends.mps.is_available() else "cpu"
 
 
-def _openvino_tile_model():
-    """SCUNet compiled for the iGPU at the fixed tile shape, or None.
+SCUNET_IR = os.environ.get(
+    "SCUNET_IR_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "weights", "scunet_tile.xml"))
+
+
+def _converted():
+    """SCUNet as an OpenVINO model at the fixed tile shape.
+
+    Read from the IR baked into the image when it is there, and only fall
+    back to converting at runtime when it is not.
+
+    That fallback is genuinely expensive and it is worth saying why:
+    `ov.convert_model` on SCUNet needs **more than 12 GB** -- measured, by
+    OOM-killing a 12 GB-capped container. On a 15 GB box also running Immich
+    and Jellyfin that is a spike big enough to get something else killed by
+    the kernel. Doing it once at build time removes the spike entirely, and
+    removes the ~35 s stall the first denoise used to pay.
+
+    The CPU and GPU builds compile from this same graph -- converting per
+    device would double the worst moment.
+    """
+    if "ov_model" not in _cache:
+        import openvino as ov
+        if os.path.exists(SCUNET_IR):
+            _cache["ov_model"] = ov.Core().read_model(SCUNET_IR)
+            logger.info("denoise: loaded prebuilt IR %s", SCUNET_IR)
+        else:
+            logger.warning("denoise: no prebuilt IR at %s, converting at runtime "
+                           "(needs >12GB, one time)", SCUNET_IR)
+            _cache["ov_model"] = ov.convert_model(
+                _model(), example_input=torch.zeros(1, 3, TILE, TILE))
+    return _cache["ov_model"]
+
+
+def _ov_tile_model(device: str = "GPU"):
+    """SCUNet compiled by OpenVINO for `device` at the fixed tile shape.
 
     Every tile is exactly TILE x TILE (edge tiles clamp their origin rather
     than shrinking), so a static shape is safe -- and static is what makes
-    the GPU plugin worth using. Measured on optiplex: 9.75s -> 3.86s per
-    tile, 2.52x.
+    the GPU plugin worth using at all. Measured on optiplex, per tile:
+    torch CPU 5.67s, OpenVINO CPU 4.27s, OpenVINO iGPU 3.39s.
+
+    NB: FP16 is already the iGPU default and is the right choice. INT8 was
+    built and measured -- 4.11s, i.e. 20% SLOWER -- because UHD 630 is
+    Gen9.5 and has no usable INT8 dot-product path. Don't re-try it.
     """
-    if _configured_device() == "cpu":
+    if device == "GPU" and _configured_device() == "cpu":
         logger.info("denoise: pinned to CPU by configuration")
         return None
-    if "ov" in _cache:
-        return _cache["ov"]
-    _cache["ov"] = None
+    key = f"ov_{device}"
+    if key in _cache:
+        return _cache[key]
+    _cache[key] = None
     try:
         import openvino as ov
         core = ov.Core()
-        if "GPU" not in core.available_devices:
-            logger.info("denoise: no OpenVINO GPU device, staying on CPU")
+        if device not in core.available_devices:
+            logger.info("denoise: no OpenVINO %s device", device)
             return None
-        example = torch.zeros(1, 3, TILE, TILE)
-        m = ov.convert_model(_model(), example_input=example)
-        _cache["ov"] = core.compile_model(m, "GPU")
-        logger.info("denoise: compiled for iGPU (%s)",
-                    core.get_property("GPU", "FULL_DEVICE_NAME"))
+        _cache[key] = core.compile_model(_converted(), device)
+        name = core.get_property(device, "FULL_DEVICE_NAME") if device == "GPU" else device
+        logger.info("denoise: compiled for %s (%s)", device, name)
     except Exception as e:  # noqa: BLE001
-        logger.warning("denoise: iGPU unavailable (%s), staying on CPU", e)
-        _cache["ov"] = None
-    return _cache["ov"]
+        logger.warning("denoise: OpenVINO %s unavailable (%s)", device, e)
+        _cache[key] = None
+    return _cache[key]
+
+
+def _openvino_tile_model():
+    """The iGPU build. Kept as the name the rest of the module uses."""
+    return _ov_tile_model("GPU")
 
 
 def device_in_use() -> str:
-    return "gpu" if _cache.get("ov") is not None else "cpu"
+    """What the denoiser will actually run on, for /health.
+
+    Reported "cpu" on a Mac while SCUNet was demonstrably resident on mps:0 --
+    it only ever looked at the OpenVINO cache, which is Intel-iGPU-specific and
+    is always None on Apple silicon. The torch device is the fallback path, so
+    it has to be part of the answer.
+    """
+    if _cache.get("ov_GPU") is not None:
+        return "gpu+cpu" if _cache.get("ov_CPU") is not None else "gpu"
+    return _device()          # "mps" (Apple GPU) or "cpu"
 
 
 def _model():
@@ -123,8 +190,8 @@ def available() -> bool:
 
 
 def loaded() -> bool:
-    # NOT bool(_cache): a failed iGPU probe stores _cache["ov"] = None, which
-    # would otherwise report the model as resident forever and stop the
+    # NOT bool(_cache): a failed device probe stores None, which would
+    # otherwise report the model as resident forever and stop the
     # idle-unload watchdog from ever firing.
     return any(v is not None for v in _cache.values())
 
@@ -195,26 +262,108 @@ def denoise(arr: np.ndarray, progress=None) -> np.ndarray:
     step = TILE - OVERLAP
     ys = list(range(0, max(h - OVERLAP, 1), step))
     xs = list(range(0, max(w - OVERLAP, 1), step))
-    acc = np.zeros_like(arr, dtype=np.float32)
-    wsum = np.zeros((h, w, 1), dtype=np.float32)
-    total = len(ys) * len(xs)
-    done = 0
+    coords = []
     for y in ys:
         for x in xs:
             y1, x1 = min(y + TILE, h), min(x + TILE, w)
-            y0, x0 = max(0, y1 - TILE), max(0, x1 - TILE)
-            tile = arr[y0:y1, x0:x1]
-            t = torch.from_numpy(np.ascontiguousarray(tile)).permute(2, 0, 1).unsqueeze(0)
-            out = _run(t).squeeze(0).permute(1, 2, 0).numpy()
-            wy = _blend_window(y1 - y0, OVERLAP if y0 > 0 else 0, OVERLAP if y1 < h else 0)
-            wx = _blend_window(x1 - x0, OVERLAP if x0 > 0 else 0, OVERLAP if x1 < w else 0)
-            wt = (wy[:, None] * wx[None, :])[..., None]
-            acc[y0:y1, x0:x1] += out * wt
-            wsum[y0:y1, x0:x1] += wt
+            coords.append((max(0, y1 - TILE), y1, max(0, x1 - TILE), x1))
+    acc = np.zeros_like(arr, dtype=np.float32)
+    wsum = np.zeros((h, w, 1), dtype=np.float32)
+    total = len(coords)
+
+    def compose(y0, y1, x0, x1, out):
+        wy = _blend_window(y1 - y0, OVERLAP if y0 > 0 else 0, OVERLAP if y1 < h else 0)
+        wx = _blend_window(x1 - x0, OVERLAP if x0 > 0 else 0, OVERLAP if x1 < w else 0)
+        wt = (wy[:, None] * wx[None, :])[..., None]
+        acc[y0:y1, x0:x1] += out * wt
+        wsum[y0:y1, x0:x1] += wt
+
+    runners = _hybrid_runners(h, w, total)
+    if runners is None:
+        done = 0
+        for (y0, y1, x0, x1) in coords:
+            t = torch.from_numpy(np.ascontiguousarray(arr[y0:y1, x0:x1])) \
+                     .permute(2, 0, 1).unsqueeze(0)
+            compose(y0, y1, x0, x1, _run(t).squeeze(0).permute(1, 2, 0).numpy())
             done += 1
             if progress:
                 progress(done, total)
+    else:
+        _run_hybrid(arr, coords, runners, compose, progress, total)
+
     return np.clip(acc / np.maximum(wsum, 1e-6), 0, 1)
+
+
+def _hybrid_runners(h: int, w: int, total: int):
+    """Two callables (one per device) when splitting the work is worth it.
+
+    Requires every tile to be exactly TILE x TILE, which is what the static
+    OpenVINO shape assumes: a frame shorter than TILE on one side produces
+    short tiles and must stay on the sequential path.
+    """
+    if total < HYBRID_MIN_TILES or h < TILE or w < TILE:
+        return None
+    gpu = _ov_tile_model("GPU")
+    if gpu is None:
+        return None
+    cpu = _ov_tile_model("CPU")
+    if cpu is None:
+        return None
+
+    def make(compiled):
+        port = compiled.output(0)
+        # One compiled model per thread: a single compiled model shares one
+        # default infer request, so calling it from both threads at once
+        # would interleave inputs.
+        return lambda nchw: compiled(nchw)[port]
+    return [make(gpu), make(cpu)]
+
+
+def _run_hybrid(arr, coords, runners, compose, progress, total):
+    """Feed one shared queue of tiles to every device at once.
+
+    Faster devices simply take more tiles; no static split to tune, and a
+    device that stalls cannot hold up the others.
+    """
+    idx = [0]
+    done = [0]
+    err = []
+    pick = threading.Lock()      # hands out tile indices
+    write = threading.Lock()     # guards acc/wsum, whose tiles overlap
+
+    def worker(run):
+        while True:
+            with pick:
+                if err or idx[0] >= len(coords):
+                    return
+                i = idx[0]; idx[0] += 1
+            y0, y1, x0, x1 = coords[i]
+            try:
+                nchw = np.ascontiguousarray(
+                    arr[y0:y1, x0:x1].transpose(2, 0, 1)[None])
+                out = np.asarray(run(nchw))[0].transpose(1, 2, 0)
+                with write:
+                    compose(y0, y1, x0, x1, np.clip(out, 0, 1))
+                    done[0] += 1
+                    n = done[0]
+                # Outside the write lock: `progress` raises RenderCancelled to
+                # abort a render, and it must not do that holding a lock.
+                if progress:
+                    progress(n, total)
+            except BaseException as e:  # noqa: BLE001
+                with pick:
+                    err.append(e)
+                return
+
+    threads = [threading.Thread(target=worker, args=(r,), daemon=True) for r in runners]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if err:
+        # Propagate the first failure -- notably RenderCancelled, which the
+        # caller relies on to stop a deleted photo's render mid-flight.
+        raise err[0]
 
 
 def blend(original: np.ndarray, denoised: np.ndarray, amount: float) -> np.ndarray:
