@@ -1,8 +1,0 @@
-torch
-torchvision
-numpy
-pillow
-tqdm
-gdown
-rawpy
-certifi

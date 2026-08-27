@@ -283,35 +283,6 @@ The denoiser is the one model where the iGPU clearly pays: **5.67 → 3.39 s** p
 
 > INT8 quantisation does **not** help here and is not worth trying: built with NNCF and calibrated on real tiles, it measured **20% slower** (4.11 vs 3.41 s/tile), because UHD 630 is Gen9.5 and has no usable INT8 dot-product path. FP16 is already the iGPU default.
 
----
-
-## Training your own model
-
-Not needed to run the service — it ships with working pretrained weights. This exists if you want to train against the MIT-Adobe FiveK dataset yourself (Mac/MPS or CUDA).
-
-```bash
-cd training
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-# Downloads + processes FiveK in disk-safe batches, deleting raws as it
-# goes. The full raw set is ~290GB; the processed 480p pairs are ~600MB.
-python3 fetch_dataset.py --target 5000 --batch 600 --min_free_gb 60
-
-python3 train.py --batch_size 32 --n_epochs 700
-python3 compare_models.py --checkpoint checkpoints/best.pt --dump_dir /tmp/cmp
-```
-
-`fetch_dataset.py` refuses to start a batch below `--min_free_gb`. An unbounded download once took a laptop down to 121MB free, which is why the guard is there.
-
-To deploy a checkpoint, copy `checkpoints/best.pt`'s `model` key into `service/weights/model.pt`.
-
-Two things worth knowing if you train:
-- **PSNR measures agreement with Expert C, not "looks good."** Clamp to [0,1] before scoring — the model legitimately overshoots, and unclamped values inflate MSE for pixels that were never visible.
-- `compare_models.py` documents its own biases in the file. The pretrained model was trained on all of FiveK, which includes whatever ends up in your test split, so that comparison favours it.
-
----
-
 ## The models
 
 | stage | model | params | device |
