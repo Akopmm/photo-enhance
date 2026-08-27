@@ -71,21 +71,6 @@ h=hashlib.sha256(open(dst,'rb').read()).hexdigest(); \
 print('scunet sha256', h, os.path.getsize(dst)//1024, 'KB'); \
 sys.exit(0 if h.startswith('fa78899ba2caec9d') else 1)"
 
-# Convert SCUNet to an OpenVINO IR here, not at runtime.
-#
-# `ov.convert_model` on SCUNet needs **more than 12 GB** (measured: a 12 GB
-# container is OOM-killed doing it). optiplex has 15 GB total and also runs
-# Immich, Jellyfin and AdGuard, so paying that at runtime risks the kernel
-# killing something else on the box -- and it stalled the first denoise after
-# every deploy by ~35 s. A build runner has the headroom; the box does not.
-RUN python -c "\
-import sys, os, torch, openvino as ov; \
-sys.path.insert(0, '/app/service'); \
-os.chdir('/app/service'); \
-import denoise; \
-ov.save_model(ov.convert_model(denoise._model(), example_input=torch.zeros(1,3,512,512)), \
-              '/app/service/weights/scunet_tile.xml'); \
-print('scunet IR', os.path.getsize('/app/service/weights/scunet_tile.bin')//1024//1024, 'MB')"
 
 # --- Intel iGPU compute runtime (optional acceleration for the denoiser) ---
 #
