@@ -1,4 +1,22 @@
+<div align="center">
+
 # photo-enhance
+
+---
+
+### Self-hosted Lightroom alternative — five neural networks, no subscription, and nothing leaves your machine.
+
+[![license](https://img.shields.io/badge/license-Apache--2.0-3c8039)](LICENSE)
+[![models](https://img.shields.io/badge/models-5%20%C2%B7%20Apache--2.0%20%2F%20MIT-3c8039)](#the-models)
+[![hardware](https://img.shields.io/badge/runs%20on-CPU%20only-4a7ebb)](#running-it)
+[![docker](https://img.shields.io/badge/ghcr.io-photo--enhance-4a7ebb?logo=docker&logoColor=white)](#docker-recommended)
+[![build](https://img.shields.io/github/actions/workflow/status/Akopmm/photo-enhance/build.yml?branch=main&label=build)](https://github.com/Akopmm/photo-enhance/actions)
+
+**[Quick start](#docker-recommended)** · **[Report a bug](https://github.com/Akopmm/photo-enhance/issues/new?labels=bug)** · **[Request a feature](https://github.com/Akopmm/photo-enhance/issues/new?labels=enhancement)** · **[Buy me a coffee](https://buymeacoffee.com/akopmm)**
+
+</div>
+
+---
 
 A self-hosted, Lightroom-style photo enhancement service. Point it at a photo — Canon CR3, Sony ARW, or plain JPEG — and it predicts a colour/exposure correction with a small neural network, then renders **18 style variants** on top of it. In *enhanced* mode it also segments the photo — subject, sky, foliage and depth — so those can be graded separately, and suggests compositional crops.
 
@@ -17,7 +35,7 @@ deploy box, a six-core i5-10500T with UHD 630 graphics.*
 
 ## How it works
 
-### The model
+### The models
 
 A small CNN (~600K parameters) based on [*Learning Image-Adaptive 3D Lookup Tables for High Performance Photo Enhancement in Real-time*](https://github.com/HuiZeng/Image-Adaptive-3DLUT) (Zeng et al., Apache-2.0). It looks at a downsampled copy of the photo and predicts how to blend a handful of learned 3D colour lookup tables into one image-specific correction.
 
@@ -284,6 +302,15 @@ descending order of how much they matter. **None of this is legal advice.**
 
 Everything else in the runtime is permissive: torch, numpy and Pillow are BSD-family; transformers,
 timm, kornia, OpenVINO and python-multipart are Apache-2.0; FastAPI, einops and rawpy are MIT.
+
+## Support
+
+This is free and always will be. If it saved you a subscription and you'd like to say thanks,
+there's a [Buy Me a Coffee](https://buymeacoffee.com/akopmm) — entirely optional, and it buys no
+priority on issues.
+
+The more useful contributions are a bug report with the photo that triggered it, or a CUDA path:
+everything runs on CPU or an Intel iGPU today, so an idle GPU in a server currently does nothing.
 
 ## License
 
