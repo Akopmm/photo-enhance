@@ -35,7 +35,7 @@ _cache = None
 #                     separately (subject vs background, sky vs ground)
 DEFAULTS = {
     "mode": "classic",
-    "immich_url": os.environ.get("IMMICH_URL", "http://192.168.0.123:2283"),
+    "immich_url": os.environ.get("IMMICH_URL", ""),
     "immich_api_key": os.environ.get("IMMICH_API_KEY", ""),
     "max_concurrent_renders": 2,
     "subject_masking": True,
@@ -47,11 +47,20 @@ DEFAULTS = {
     "denoise_mode": "auto",
     "denoise_threshold": 3.0,
     "denoise_amount": 0.9,
-    # auto | cpu | gpu. The iGPU is 2.52x faster on the denoiser, but the
-    # Intel driver and OpenVINO plugin map ~680 MB into the process that is
-    # never released, and the compiled model holds ~2.8 GB while resident
-    # against a few hundred MB on CPU. Measured on optiplex; the trade is
-    # real enough to be a setting rather than a decision made for you.
+    # auto | cpu | gpu.
+    #
+    # On an Intel iGPU the denoiser is ~1.7x faster (measured 5.67 -> 3.39 s
+    # per 512px tile on a UHD 630), but it is not free:
+    #   * the Intel driver and OpenVINO plugin map ~680 MB into the process
+    #     and never release it, and the compiled model holds ~2.8 GB while
+    #     resident, against a few hundred MB on CPU;
+    #   * ⚠️ building that compiled model calls `ov.convert_model` on SCUNet,
+    #     which peaks at MORE THAN 12 GB, once per process. It is measured:
+    #     12 GB and 10 GB containers and a 16 GB CI runner are all OOM-killed
+    #     doing it. If your host has an Intel iGPU and less than ~16 GB of
+    #     RAM, set this to "cpu" -- "auto" will try the GPU and the kernel
+    #     may kill something else on the box.
+    # Hosts with no /dev/dri never reach that path at all.
     "denoise_device": "auto",
     "cinematic_presets": True,
     "max_concurrent_jobs": int(os.environ.get("MAX_CONCURRENT_JOBS", "3")),

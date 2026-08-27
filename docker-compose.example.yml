@@ -1,0 +1,61 @@
+# photo-enhance — copy to docker-compose.yml and edit.
+#
+#   docker compose up -d
+#   then open http://<host>:5054 and create the admin account.
+#
+# Immich is OPTIONAL. With no Immich configured you can still upload RAW/JPEG
+# files directly; Immich just saves you the download-and-upload step.
+
+services:
+  photo-enhance:
+    image: ghcr.io/akopmm/photo-enhance:latest
+    # Published for linux/amd64 only. On arm64 (Apple silicon, Raspberry Pi,
+    # most ARM NAS boxes) build it yourself from the repo root:
+    #   docker build -f service/Dockerfile -t photo-enhance .
+    container_name: photo-enhance
+    restart: unless-stopped
+    ports:
+      - "5054:5054"
+    environment:
+      # Bootstraps the first admin. You can omit both and use the one-time
+      # "create admin" form on the login page instead.
+      PHOTO_ENHANCE_ADMIN_USER: "change-me"
+      PHOTO_ENHANCE_ADMIN_PASSWORD: "use-a-long-random-password"
+
+      # How many photos may be in the pipeline at once. Each import peaks
+      # around 2.5GB (4.5GB if it needs denoising), so this is the main knob
+      # for fitting the service into the RAM you have.
+      MAX_CONCURRENT_JOBS: "2"
+
+      # auto | cpu | gpu.
+      #
+      # ⚠️ Leave this at "cpu" unless your host has an Intel iGPU AND at
+      # least ~16GB of RAM. "auto" will try to compile SCUNet for the iGPU,
+      # and that conversion peaks above 12GB, once, at the first denoise. On
+      # a smaller box the kernel may kill something else to make room.
+      # A host with no /dev/dri never reaches that path at all.
+      DENOISE_DEVICE: "cpu"
+
+    volumes:
+      # Renders AND config (users, API keys, session secret) live here.
+      # Keep it on a real volume or an image update wipes your accounts.
+      - ./photo-enhance-data:/app/service/data/renders
+
+    # --- Intel iGPU, optional -------------------------------------------
+    # Uncomment together with DENOISE_DEVICE=gpu above. Worth ~1.7x on the
+    # denoiser (5.67 -> 3.39 s per 512px tile on a UHD 630), at the cost of
+    # ~680MB permanently mapped into the process, plus the 12GB conversion
+    # spike noted above. `render` is the group that owns /dev/dri on most
+    # distros — check with: getent group render
+    #
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - "993"   # <- your host's `render` gid, not necessarily 993
+
+    # --- Sizing note ------------------------------------------------------
+    # This is a CPU-bound service and it is honest about that. On a 6-core
+    # i5-10500T: ~29s to import a 26MP RAW, and ~6 minutes to export one at
+    # full 6000x4000 resolution with denoising on. Smaller output presets
+    # scale down roughly linearly (3000px is about a quarter of the work).
+    # Anything modern and faster will do proportionally better.

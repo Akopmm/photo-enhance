@@ -153,6 +153,10 @@ Switch in **Settings**. Defaults to `classic`.
 
 ### Docker (recommended)
 
+There is a ready-made [`docker-compose.example.yml`](docker-compose.example.yml) at the repo root — copy it to `docker-compose.yml`, change the password, `docker compose up -d`.
+
+> **Published image is `linux/amd64` only.** On arm64 (Apple silicon, Raspberry Pi, most ARM NAS boxes) build it yourself: `docker build -f service/Dockerfile -t photo-enhance .` from the repo root. The image also bundles an Intel GPU runtime that is dead weight on non-Intel hosts.
+
 CI publishes `ghcr.io/akopmm/photo-enhance:latest` on every push to `main`, with the segmentation weights **baked in** — no cold-start download, no dependency on Hugging Face being reachable.
 
 ```bash
@@ -197,13 +201,20 @@ Everything else — mode, masking toggles, concurrency, JPEG quality, users — 
 |---|---|---|
 | `PHOTO_ENHANCE_ADMIN_USER` / `_PASSWORD` | — | Bootstraps the first admin only |
 | `RENDER_STORAGE_DIR` | `service/data/renders` | Renders **and** config |
-| `MAX_CONCURRENT_JOBS` | `3` | Whole-pipeline gate, decode included |
+| `MAX_CONCURRENT_JOBS` | `2` | Whole-pipeline gate, decode included |
+| `DENOISE_DEVICE` | `auto` | `auto` / `cpu` / `gpu`. **Set `cpu` on an Intel iGPU host with <16GB RAM** — see below |
 | `IDLE_UNLOAD_MINUTES` | `15` | Drops the model when idle |
 | `INFERENCE_DEVICE` | `cpu` | or `openvino_cpu` / `openvino_gpu` |
 
 On concurrency: the gate covers the **entire** pipeline. An earlier version only locked the model call while RAW decode ran unbounded on the default thread pool, so ~30 concurrent imports meant ~30 simultaneous full-resolution decodes (~250-400MB each) and pegged the host. Segmentation has its own stricter `Semaphore(1)` on top.
 
-`INFERENCE_DEVICE=openvino_gpu` (with `/dev/dri` passed through) routes inference through an Intel iGPU. Measured on an i5-10500T this was **no faster** than plain CPU for the global-LUT path — each preset is a separate small dispatch, so overhead swamps the gain. Segmentation is a much better fit for that hardware if you want to revisit it.
+`INFERENCE_DEVICE=openvino_gpu` (with `/dev/dri` passed through) routes the colour model through an Intel iGPU. An earlier note here claimed this was "no faster than CPU" — **that measurement was invalid**: it was taken with no Intel compute runtime installed, so OpenVINO reported no GPU and silently ran on CPU. It was comparing CPU against CPU. Untested since.
+
+The denoiser is the one model where the iGPU clearly pays: **5.67 → 3.39 s** per 512 px tile on a UHD 630. Two things to know before enabling it:
+
+> ⚠️ **`DENOISE_DEVICE=auto` needs ~16GB of RAM on an Intel iGPU host.** Compiling SCUNet for OpenVINO calls `ov.convert_model`, which peaks **above 12GB**, once per process — 12GB and 10GB containers and a 16GB CI runner are all OOM-killed doing it. On a smaller box set `DENOISE_DEVICE=cpu`. Hosts with no `/dev/dri` never reach that code path, so this only affects Intel iGPU users who opt in.
+
+> INT8 quantisation does **not** help here and is not worth trying: built with NNCF and calibrated on real tiles, it measured **20% slower** (4.11 vs 3.41 s/tile), because UHD 630 is Gen9.5 and has no usable INT8 dot-product path. FP16 is already the iGPU default.
 
 ---
 
