@@ -588,14 +588,28 @@ async def gallery_delete(import_id: str, user: str = Depends(current_user)):
 
 # ---- pages ----
 
+# The page is an app shell: its markup, CSS and JavaScript all live in one
+# file, so a stale copy is a stale *application*. FastAPI sends an ETag and
+# Last-Modified but no Cache-Control, and browsers then apply heuristic
+# freshness -- reusing the file for a fraction of its age without asking the
+# server. That shipped a deploy where the new UI was live on the server and
+# invisible in the app until its cache was cleared by hand.
+#
+# no-cache does not mean "do not store": it means revalidate every time. The
+# ETag makes that a 304 with no body whenever nothing changed, so the cost is
+# one conditional request per load.
+def _html(path: str) -> FileResponse:
+    return FileResponse(path, headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/login")
 async def login_page():
-    return FileResponse("static/login.html")
+    return _html("static/login.html")
 
 
 @app.get("/settings")
 async def settings_page():
-    return FileResponse("static/settings.html")
+    return _html("static/settings.html")
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -603,4 +617,4 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 async def index():
-    return FileResponse("static/index.html")
+    return _html("static/index.html")

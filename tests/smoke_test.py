@@ -88,6 +88,18 @@ def main() -> int:
                                  "size": "medium", "crop_rect": "0.1,0.1,0.5,0.5"}),
     ]
 
+    # Not a status-code check like the rest of this file, but it belongs with
+    # them: the page is an app shell, so a stale copy is a stale application.
+    # Without Cache-Control the browser invents its own freshness window and a
+    # deploy can be live on the server and invisible in the client.
+    for page in ("/", "/login", "/settings"):
+        r = client.get(page)
+        cc = r.headers.get("cache-control", "")
+        if r.status_code < 400 and "no-cache" not in cc:
+            FAILS.append(f"GET {page} -> Cache-Control {cc!r}, expected no-cache")
+        else:
+            print(f"  ok  GET  {page} -> Cache-Control: {cc or '(redirect)'}")
+
     for method, path, payload in checks:
         try:
             if method == "GET":
