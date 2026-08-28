@@ -50,25 +50,36 @@ def test_a_clean_frame_is_returned_untouched():
     assert np.array_equal(out, photo)
 
 
-def test_a_uniformly_dark_photo_is_not_eaten():
-    # Every edge looks "dead" here. The trim must notice the darkness does not
-    # stop, and leave the frame alone rather than cropping its budget off it.
-    dark = np.random.default_rng(1).integers(0, 4, (400, 600, 3), dtype=np.uint8)
-    assert _trim_dead_border(dark).shape == dark.shape
+def test_the_real_geometry_from_a_sony_arw():
+    # Measured from DSC00573.ARW: half-size decode 3584x2560 with 216 dead
+    # rows at the bottom and 64 dead columns at the right, leaving a clean
+    # 3:2. Scaled down here so the test stays fast.
+    photo = _photo(586, 880)
+    frame = np.vstack([np.hstack([photo, _black(586, 16)]), _black(54, 896)])
+    out = _trim_dead_border(frame)
+    assert out.shape == photo.shape, out.shape
+    assert abs(out.shape[1] / out.shape[0] - 1.5) < 0.01
 
 
-def test_a_deliberate_letterbox_survives():
-    # Someone exported a 2.39:1 crop with real black bars. Those are content.
+def test_a_very_dark_band_that_is_not_exactly_zero_survives():
+    # The realistic false positive: a night sky, or heavy vignetting. Dark,
+    # but carrying sensor noise, so never exactly zero. This is the case the
+    # exact-zero test exists to protect.
     photo = _photo()
-    boxed = np.vstack([_black(60, 600), photo, _black(60, 600)])
+    murk = np.random.default_rng(2).integers(0, 3, (80, 600, 3), dtype=np.uint8)
+    murk[murk == 0] = 1          # dark everywhere, zero nowhere
+    boxed = np.vstack([photo, murk])
     assert _trim_dead_border(boxed).shape == boxed.shape
 
 
-def test_the_trim_is_bounded():
-    # Even against an entirely black frame it can never remove more than its
-    # budget, so a bug here cannot destroy a photo.
-    out = _trim_dead_border(_black(400, 600))
-    assert out.shape == (400, 600, 3)
+def test_a_black_run_wider_than_the_budget_is_left_alone():
+    # The darkness never stops, so this is the picture, not a border.
+    frame = np.vstack([_photo(100, 600), _black(400, 600)])
+    assert _trim_dead_border(frame).shape == frame.shape
+
+
+def test_a_uniformly_black_frame_is_untouched():
+    assert _trim_dead_border(_black(400, 600)).shape == (400, 600, 3)
 
 
 if __name__ == "__main__":

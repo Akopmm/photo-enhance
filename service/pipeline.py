@@ -179,37 +179,45 @@ def _encode_to_target(arr: np.ndarray, target_mb: float | None) -> bytes:
     return data
 
 
-def _trim_dead_border(rgb: np.ndarray, max_fraction: float = 0.02,
-                      level: int = 6) -> np.ndarray:
-    """Drop the masked sensor rows some RAWs decode with.
+def _trim_dead_border(rgb: np.ndarray, max_fraction: float = 0.25) -> np.ndarray:
+    """Drop the dead rows and columns some RAWs decode with.
 
-    LibRaw hands back a frame slightly larger than the visible image for a
-    number of bodies -- Sony ARW most visibly -- and the extra rows are the
-    sensor's optically masked border: solid black. Nothing downstream can tell
-    those apart from picture, so they survive into the thumbnail, the model
-    input and the exported file as a black strip along one edge.
+    A real Sony ARW measured here decodes to 3584x2560 with 216 bottom rows
+    and 64 right-hand columns that are *exactly* zero in all three channels;
+    what remains is 3520x2344, a clean 3:2. LibRaw offers no way to know: it
+    reports the visible area as the full frame, margins zero, so there is no
+    metadata to crop by and the geometry has to be measured.
 
-    The rule is deliberately timid. Only edges that are essentially black are
-    removed, only from the outside in, and never more than `max_fraction` of
-    the dimension -- a night shot, a dark studio background, or a deliberate
-    letterbox has to come through untouched.
+    Nothing downstream can tell those lines from picture, so they reach the
+    thumbnail, the model's input and the exported file as a black band along
+    an edge.
+
+    The test is exact zero, not merely dark. An entire row of several thousand
+    pixels reading 0 in every channel after demosaic, white balance and an
+    sRGB conversion is a decode artefact; a photograph of a night sky still
+    carries sensor noise. That precision is what makes a generous budget safe
+    -- an earlier version used "near black" and had to cap itself at 2% to
+    avoid eating dark frames, which was less than a third of what this file
+    actually needed.
+
+    Two further guards. A run only counts if the darkness *stops*: hitting the
+    budget means the picture itself is black there, so that edge is left
+    alone. And this runs on camera RAW only, where a deliberate letterbox does
+    not occur.
     """
     h, w = rgb.shape[:2]
-    max_y, max_x = int(h * max_fraction), int(w * max_fraction)
 
     def run(is_dead, limit):
-        """How many dead lines lead this edge, or 0 if the darkness just keeps
-        going. Running out of budget means the picture itself is dark here,
-        not that we found a border, so that edge is left alone."""
         n = 0
         while n < limit and is_dead(n):
             n += 1
         return 0 if n >= limit else n
 
-    top = run(lambda i: rgb[i].max() <= level, max_y)
-    bottom = h - run(lambda i: rgb[h - 1 - i].max() <= level, max_y)
-    left = run(lambda i: rgb[:, i].max() <= level, max_x)
-    right = w - run(lambda i: rgb[:, w - 1 - i].max() <= level, max_x)
+    max_y, max_x = int(h * max_fraction), int(w * max_fraction)
+    top = run(lambda i: rgb[i].max() == 0, max_y)
+    bottom = h - run(lambda i: rgb[h - 1 - i].max() == 0, max_y)
+    left = run(lambda i: rgb[:, i].max() == 0, max_x)
+    right = w - run(lambda i: rgb[:, w - 1 - i].max() == 0, max_x)
 
     if (top, left, bottom, right) == (0, 0, h, w):
         return rgb
