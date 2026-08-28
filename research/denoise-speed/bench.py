@@ -24,9 +24,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "..", "..", "service"))
 import denoise as dn  # noqa: E402
 
-RAW = os.environ.get("PHOTO") or sys.exit(
-    "set PHOTO to a RAW file: PHOTO=/path/to/shot.cr3 "
-    "./service/.venv/bin/python research/denoise-speed/bench.py")
+# Checked in main(), not here: exiting at import time would make the script
+# unimportable, and CI imports these to catch drift from the service API.
+RAW = os.environ.get("PHOTO", "")
+
+
+def _require_photo():
+    if not RAW:
+        sys.exit("set PHOTO to a RAW file, e.g.\n"
+                 "  PHOTO=/path/to/shot.cr3 ./service/.venv/bin/python "
+                 f"research/denoise-speed/{os.path.basename(__file__)}")
 # 2400, not 3200: a half-size decode tops out at 3000px, and every variant
 # has to be judged at a size all of them can actually deliver.
 OUTPUT_EDGE = 2400
@@ -141,6 +148,7 @@ def guided_chroma(a, radius=4, eps=1e-3, factor=4):
 # --------------------------------------------------------------------- run
 
 def main():
+    _require_photo()
     print(f"device: {dn._device()}   output edge: {OUTPUT_EDGE}px\n")
 
     t0 = time.time()

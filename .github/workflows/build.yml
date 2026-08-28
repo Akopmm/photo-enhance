@@ -66,6 +66,26 @@ jobs:
           python tests/smoke_test.py
 
 
+      # These three were in the repository but not in this file, which is how
+      # a commit shipped that referenced a lock it never defined: every GPU
+      # denoise raised NameError, and denoise_shape_test.py -- which catches
+      # exactly that -- was never run.
+      - name: Unit tests
+        run: |
+          python tests/border_trim_test.py
+          python tests/denoise_shape_test.py
+          python tests/ov_concurrency_test.py
+
+      # research/ imports from service/, so renaming anything it calls breaks
+      # it silently. Importing costs a second and catches that; running them
+      # properly needs a RAW file and model weights, so it stays manual.
+      - name: Research scripts still import
+        run: |
+          for f in research/*/*.py; do
+            PYTHONPATH=research/denoise-speed python -c "import runpy,sys; runpy.run_path('$f', run_name='probe')" || exit 1
+            echo "ok $f"
+          done
+
       # The storage row is created partway through an import, while the
       # placeholder is still registered. Both were returned, so one photo
       # showed as a spinner AND a half-built tile you could click into.
