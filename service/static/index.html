@@ -502,6 +502,8 @@ function openPicker() {
     </div>
     <div class="sheet-body">
       <div data-pane="immich">
+        <input id="immich-q" type="search" autocomplete="off"
+               placeholder="Search your library — try &quot;pizza&quot; or &quot;beach at sunset&quot;" />
         <select id="album-select"><option value="">All photos</option></select>
         <div class="pick-grid" id="pick-grid"></div>
         <div style="text-align:center"><button class="btn ghost" id="load-more" hidden
@@ -524,6 +526,17 @@ function openPicker() {
     sheet.querySelectorAll('[data-pane]').forEach(p => { p.hidden = p.dataset.pane !== t.dataset.src; });
   }));
   sheet.querySelector('#album-select').addEventListener('change', e => loadImmich(e.target.value, true));
+  // Immich runs a CLIP query per search, so wait for a pause in typing rather
+  // than firing on every keystroke. Enter searches straight away.
+  const qBox = sheet.querySelector('#immich-q');
+  let qTimer = null;
+  const runSearch = () => {
+    clearTimeout(qTimer);
+    immich.q = qBox.value.trim();
+    loadImmich(immich.album, true);
+  };
+  qBox.addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(runSearch, 400); });
+  qBox.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); runSearch(); } });
   sheet.querySelector('#load-more').addEventListener('click', () => loadImmich(immich.album, false));
   wireUpload(sheet);
 
@@ -551,7 +564,7 @@ function closePicker() {
   picker.back.remove(); picker.sheet.remove(); picker = null;
 }
 
-const immich = { album: '', next: null, busy: false };
+const immich = { album: '', q: '', next: null, busy: false };
 async function loadAlbums() {
   try {
     const albums = await jget('/api/immich/albums');
@@ -569,6 +582,7 @@ async function loadImmich(album, reset) {
   if (reset) { immich.album = album; immich.next = null; $('pick-grid').innerHTML = ''; }
   const params = new URLSearchParams();
   if (immich.album) params.set('album_id', immich.album);
+  if (immich.q) params.set('q', immich.q);
   if (immich.next) params.set('page', immich.next);
   try {
     const res = await jget('/api/immich/search?' + params.toString());
@@ -585,6 +599,10 @@ async function loadImmich(album, reset) {
     }
     immich.next = res.nextPage;
     $('load-more').hidden = !res.nextPage;
+    if (immich.q && !res.items.length && reset) {
+      grid.innerHTML = '<p class="muted">Nothing matched that. Immich needs its ' +
+                       'machine-learning job to have run for search to find anything.</p>';
+    }
   } catch (e) {
     toast('Could not load photos: ' + e, true);
   } finally { immich.busy = false; }

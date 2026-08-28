@@ -70,6 +70,17 @@ def main() -> int:
         ("GET", f"/api/gallery/{imp}/punch_thumb.jpg", {"strength": "0.60"}),
         ("GET", f"/api/gallery/{imp}/motion_wiggle.gif", None),
         ("GET", f"/api/gallery/{imp}/motion_turn.gif", None),
+        # The Immich picker. No credentials are configured for the smoke user,
+        # so these answer 400 -- which is the point: a 400 still proves the
+        # route accepts these parameters and that its call into
+        # immich_client matches that function's signature. A mismatch there is
+        # a 500, and is exactly the class of bug this file exists to catch.
+        ("GET", "/api/immich/albums", None),
+        ("GET", "/api/immich/search", None),
+        ("GET", "/api/immich/search", {"album_id": "abc"}),
+        ("GET", "/api/immich/search", {"q": "pizza"}),
+        ("GET", "/api/immich/search", {"q": "beach at sunset", "album_id": "abc",
+                                       "page": "2", "size": "60"}),
         # the download job, with every parameter the editor can attach
         ("POST", "/api/render", {"import_id": imp, "style_key": "punch"}),
         ("POST", "/api/render", {"import_id": imp, "style_key": "punch",
