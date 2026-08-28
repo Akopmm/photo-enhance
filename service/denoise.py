@@ -28,6 +28,8 @@ import logging
 import os
 import sys
 
+import threading
+
 import numpy as np
 
 import ov_infer
@@ -94,22 +96,29 @@ def _openvino_tile_model():
         return None
     if "ov" in _cache:
         return _cache["ov"]
-    _cache["ov"] = None
-    try:
-        import openvino as ov
-        core = ov.Core()
-        if "GPU" not in core.available_devices:
-            logger.info("denoise: no OpenVINO GPU device, staying on CPU")
-            return None
-        example = torch.zeros(1, 3, TILE, TILE)
-        m = ov.convert_model(_model(), example_input=example)
-        _cache["ov"] = core.compile_model(m, "GPU")
-        logger.info("denoise: compiled for iGPU (%s)",
-                    core.get_property("GPU", "FULL_DEVICE_NAME"))
-    except Exception as e:  # noqa: BLE001
-        logger.warning("denoise: iGPU unavailable (%s), staying on CPU", e)
+    # Serialised: two imports can start together, and without this the second
+    # thread saw the None written below while the first was still converting,
+    # silently dropping that whole image onto the slow path. The conversion is
+    # also a multi-gigabyte event that must not happen twice at once.
+    with _build_lock:
+        if "ov" in _cache:
+            return _cache["ov"]
         _cache["ov"] = None
-    return _cache["ov"]
+        try:
+            import openvino as ov
+            core = ov.Core()
+            if "GPU" not in core.available_devices:
+                logger.info("denoise: no OpenVINO GPU device, staying on CPU")
+                return None
+            example = torch.zeros(1, 3, TILE, TILE)
+            m = ov.convert_model(_model(), example_input=example)
+            _cache["ov"] = core.compile_model(m, "GPU")
+            logger.info("denoise: compiled for iGPU (%s)",
+                        core.get_property("GPU", "FULL_DEVICE_NAME"))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("denoise: iGPU unavailable (%s), staying on CPU", e)
+            _cache["ov"] = None
+        return _cache["ov"]
 
 
 def device_in_use() -> str:
@@ -190,7 +199,13 @@ def _run(t: torch.Tensor) -> torch.Tensor:
             # thread, and a second concurrent render then fails outright
             # with "Infer Request is busy".
             arr = ov_infer.infer(comp, "denoise_tile", t.numpy())
-            return torch.from_numpy(arr)[:, :, :h, :w].clamp(0, 1)
+            if arr.shape == tuple(t.shape):
+                return torch.from_numpy(arr)[:, :, :h, :w].clamp(0, 1)
+            # Anything else is a bug, and passing it on makes the tiler fail
+            # far away with an unreadable broadcast error. Say what happened
+            # and finish the tile on the CPU rather than losing the import.
+            logger.error("denoise: iGPU returned %s for a %s tile, using CPU "
+                         "for this one", arr.shape, tuple(t.shape))
     out = _model()(t.to(_device())).cpu()
     return out[:, :, :h, :w].clamp(0, 1)
 

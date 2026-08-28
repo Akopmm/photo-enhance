@@ -307,7 +307,11 @@ def _start_import(user: str, name: str, work):
         try:
             await work(claim)
         except Exception as e:  # noqa: BLE001
-            logger.warning("import failed for %s: %s", name, e)
+            # exc_info: without the stack this line names the exception and
+            # loses the only thing that says where it came from. A shape
+            # mismatch deep in the tiler read as an unattributable
+            # "operands could not be broadcast" with nothing to chase.
+            logger.warning("import failed for %s: %s", name, e, exc_info=True)
             entry["error"] = str(e)[:200]
             entry["created_at"] = time.time()
             # Leave the failure visible briefly rather than vanishing.
