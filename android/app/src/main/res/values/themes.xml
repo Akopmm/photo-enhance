@@ -1,0 +1,4 @@
+<resources>
+    <!-- Follows the phone's own light/dark setting, as the web UI does. -->
+    <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar" />
+</resources>

@@ -242,6 +242,25 @@ docker build -f service/Dockerfile -t photo-enhance .
 
 > `torchvision` must be resolved from the same CPU index as `torch`. `timm` pulls it in transitively, and the default PyPI wheel is a CUDA build whose compiled ops don't match (`operator torchvision::nms does not exist`). The Dockerfile installs the pair together.
 
+### On Android
+
+`android/` is a small wrapper that puts this same web UI in its own window,
+with a launcher icon. Everything still runs on the server — there is no second
+implementation to keep in step, so the app cannot fall behind when you update
+the service.
+
+    cd android && ./gradlew :app:assembleDebug
+
+It exists because a plain browser tab is not quite enough. A bare WebView looks
+right and then fails at the two things you would use it for: `<input
+type="file">` opens nothing unless the host app implements `onShowFileChooser`,
+and the editor delivers its render as a `blob:` URL, which Android's
+`DownloadListener` is never told about and `DownloadManager` cannot fetch — so
+"Download full resolution" would silently do nothing. The wrapper handles both,
+keeps the login cookie between launches, and runs full screen.
+
+Set the server address on first launch; the back button offers to change it.
+
 ### From source
 
 ```bash

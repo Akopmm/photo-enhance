@@ -1,0 +1,11 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- An aperture, drawn simply: six blades around an open centre. -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M54,30a24,24 0,1 0,0.01 0zM54,38a16,16 0,1 1,-0.01 0z" />
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M54,42l18,10 -4,7 -18,-10z" />
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M54,66l-18,-10 4,-7 18,10z" />
+</vector>
