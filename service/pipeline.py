@@ -179,6 +179,44 @@ def _encode_to_target(arr: np.ndarray, target_mb: float | None) -> bytes:
     return data
 
 
+def _trim_dead_border(rgb: np.ndarray, max_fraction: float = 0.02,
+                      level: int = 6) -> np.ndarray:
+    """Drop the masked sensor rows some RAWs decode with.
+
+    LibRaw hands back a frame slightly larger than the visible image for a
+    number of bodies -- Sony ARW most visibly -- and the extra rows are the
+    sensor's optically masked border: solid black. Nothing downstream can tell
+    those apart from picture, so they survive into the thumbnail, the model
+    input and the exported file as a black strip along one edge.
+
+    The rule is deliberately timid. Only edges that are essentially black are
+    removed, only from the outside in, and never more than `max_fraction` of
+    the dimension -- a night shot, a dark studio background, or a deliberate
+    letterbox has to come through untouched.
+    """
+    h, w = rgb.shape[:2]
+    max_y, max_x = int(h * max_fraction), int(w * max_fraction)
+
+    def run(is_dead, limit):
+        """How many dead lines lead this edge, or 0 if the darkness just keeps
+        going. Running out of budget means the picture itself is dark here,
+        not that we found a border, so that edge is left alone."""
+        n = 0
+        while n < limit and is_dead(n):
+            n += 1
+        return 0 if n >= limit else n
+
+    top = run(lambda i: rgb[i].max() <= level, max_y)
+    bottom = h - run(lambda i: rgb[h - 1 - i].max() <= level, max_y)
+    left = run(lambda i: rgb[:, i].max() <= level, max_x)
+    right = w - run(lambda i: rgb[:, w - 1 - i].max() <= level, max_x)
+
+    if (top, left, bottom, right) == (0, 0, h, w):
+        return rgb
+    logger.info("trimmed dead border: %dx%d -> %dx%d", w, h, right - left, bottom - top)
+    return rgb[top:bottom, left:right]
+
+
 def _decode_full(raw_bytes: bytes, filename: str, no_auto_bright: bool = True,
                  half_size: bool = False) -> np.ndarray:
     """(H, W, 3) float32 in [0,1] at native resolution.
@@ -201,7 +239,7 @@ def _decode_full(raw_bytes: bytes, filename: str, no_auto_bright: bool = True,
                     output_color=rawpy.ColorSpace.sRGB,
                     half_size=half_size,
                 )
-        img = Image.fromarray(rgb)
+        img = Image.fromarray(_trim_dead_border(rgb))
     else:
         img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
     return np.asarray(img).astype(np.float32) / 255.0
