@@ -30,6 +30,8 @@ import logging
 import os
 
 import numpy as np
+
+import ov_infer
 import torch
 import torchvision.transforms as T
 from PIL import Image, ImageFilter
@@ -145,7 +147,10 @@ def subject_mask(img: Image.Image) -> np.ndarray:
     if comp is not None:
         # The converted graph exposes the single output that corresponds to
         # torch's m(x)[-1]; verified identical to 2.9e-08 on real photos.
-        logits = comp(x.numpy())[comp.output(len(comp.outputs) - 1)]
+        # Serialised by _mask_gate today, but that is someone else's
+        # semaphore; a request of our own is what actually makes this safe.
+        logits = ov_infer.infer(comp, "birefnet", x.numpy(),
+                                comp.output(len(comp.outputs) - 1))
         pred = 1.0 / (1.0 + np.exp(-np.asarray(logits, dtype=np.float32)))
         pred = pred[0].squeeze().astype(np.float32)
     else:
