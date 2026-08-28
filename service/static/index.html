@@ -156,9 +156,23 @@
   .seg { display: inline-flex; background: var(--surface-2); border-radius: 10px; padding: 3px; gap: 3px; }
   .seg button { background: none; border: none; padding: .45rem .85rem; border-radius: 8px; font-size: .87rem; min-height: 38px; }
   .seg button[aria-selected="true"] { background: var(--accent); color: var(--accent-in); font-weight: 600; }
-  select, input[type=file] {
+  select, input[type=file], input[type=search] {
     font-size: 16px; padding: .6rem; background: var(--surface-2); color: var(--text);
     border: 1px solid var(--line); border-radius: 10px; max-width: 100%;
+  }
+  /* The picker's two filters read as one control: search narrows the library,
+     the album narrows it further. Stacked full width so neither is a stray
+     box floating beside the other. */
+  .pick-filters { display: grid; gap: .5rem; }
+  .pick-filters > * { width: 100%; }
+  /* Search inputs come with their own platform chrome -- a white field on
+     Android, an inset shadow and a cancel button on WebKit -- which is why
+     this one arrived unstyled while the select next to it looked right. */
+  input[type=search] { -webkit-appearance: none; appearance: none; }
+  input[type=search]::-webkit-search-cancel-button { -webkit-appearance: none; }
+  input[type=search]::placeholder { color: var(--text-dim); }
+  input[type=search]:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent;
   }
   .pick-grid { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); margin-top: .9rem; }
   .pick { aspect-ratio: 1; border-radius: 10px; overflow: hidden; border: 1px solid var(--line);
@@ -502,9 +516,11 @@ function openPicker() {
     </div>
     <div class="sheet-body">
       <div data-pane="immich">
-        <input id="immich-q" type="search" autocomplete="off"
-               placeholder="Search your library — try &quot;pizza&quot; or &quot;beach at sunset&quot;" />
-        <select id="album-select"><option value="">All photos</option></select>
+        <div class="pick-filters">
+          <input id="immich-q" type="search" autocomplete="off"
+                 placeholder="Search — try &quot;pizza&quot; or &quot;sunset&quot;" />
+          <select id="album-select"><option value="">All photos</option></select>
+        </div>
         <div class="pick-grid" id="pick-grid"></div>
         <div style="text-align:center"><button class="btn ghost" id="load-more" hidden
              style="margin-top:1rem">Load more</button></div>
