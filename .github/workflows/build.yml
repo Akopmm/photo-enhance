@@ -6,6 +6,11 @@ on:
     # The Android app is not in this image's build context, so a commit that
     # only touches it would republish a byte-identical image.
     paths-ignore: ['android/**', '.github/workflows/android.yml']
+  # Pull requests run the checks but do not publish. Without this the tests
+  # only ran after a merge, which is the wrong side of the decision: a branch
+  # could be reviewed, merged, and only then found to be broken.
+  pull_request:
+    paths-ignore: ['android/**', '.github/workflows/android.yml']
 
 jobs:
   build:
@@ -66,6 +71,27 @@ jobs:
           python tests/smoke_test.py
 
 
+      # These three were in the repository but not in this file, which is how
+      # a commit shipped that referenced a lock it never defined: every GPU
+      # denoise raised NameError, and denoise_shape_test.py -- which catches
+      # exactly that -- was never run.
+      - name: Unit tests
+        run: |
+          python tests/border_trim_test.py
+          python tests/denoise_shape_test.py
+          python tests/ov_concurrency_test.py
+          python tests/guided_chroma_test.py
+
+      # research/ imports from service/, so renaming anything it calls breaks
+      # it silently. Importing costs a second and catches that; running them
+      # properly needs a RAW file and model weights, so it stays manual.
+      - name: Research scripts still import
+        run: |
+          for f in research/*/*.py; do
+            PYTHONPATH=research/denoise-speed python -c "import runpy,sys; runpy.run_path('$f', run_name='probe')" || exit 1
+            echo "ok $f"
+          done
+
       # The storage row is created partway through an import, while the
       # placeholder is still registered. Both were returned, so one photo
       # showed as a spinner AND a half-built tile you could click into.
@@ -94,6 +120,7 @@ jobs:
           exit $status
 
       - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -101,6 +128,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        if: github.event_name == 'push'
         uses: docker/build-push-action@v5
         with:
           context: .

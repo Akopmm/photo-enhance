@@ -47,6 +47,14 @@ DEFAULTS = {
     "denoise_mode": "auto",
     "denoise_threshold": 3.0,
     "denoise_amount": 0.9,
+    # quality | fast.
+    #
+    # "quality" runs SCUNet, which is 99.7% of a full-resolution render.
+    # "fast" runs a guided chroma filter instead: measured at 0.09s against
+    # 16s on a 3200px frame, it removes the colour blotching and leaves the
+    # luma grain. That is a different picture, not a cheaper route to the same
+    # one -- see research/denoise-speed/FINDINGS.md.
+    "denoise_method": "quality",
     # auto | cpu | gpu.
     #
     # On an Intel iGPU the denoiser is ~1.7x faster (measured 5.67 -> 3.39 s
@@ -82,6 +90,7 @@ EDITABLE = {
     "denoise_mode": str,
     "denoise_threshold": float,
     "denoise_amount": float,
+    "denoise_method": str,
     "denoise_device": str,
     "cinematic_presets": bool,
     "max_concurrent_jobs": int,

@@ -221,13 +221,101 @@ def _blend_window(n: int, lead: int, trail: int) -> np.ndarray:
     return w
 
 
-def denoise(arr: np.ndarray, progress=None) -> np.ndarray:
+
+def _configured_method() -> str:
+    try:
+        import settings
+        return (settings.get("denoise_method") or "quality").lower()
+    except Exception:  # noqa: BLE001
+        return "quality"
+
+
+def _box(a: np.ndarray, r: int) -> np.ndarray:
+    """Mean over a (2r+1) window, via a summed-area table: O(1) per pixel."""
+    pad = np.pad(a, ((r + 1, r), (r + 1, r)), mode="edge")
+    s = pad.cumsum(0).cumsum(1)
+    k = 2 * r + 1
+    return (s[k:, k:] - s[:-k, k:] - s[k:, :-k] + s[:-k, :-k]) / (k * k)
+
+
+def guided_chroma(arr: np.ndarray, radius: int = 4, eps: float = 1e-3,
+                  factor: int = 4) -> np.ndarray:
+    """Denoise chroma only, with a guided filter, at reduced resolution.
+
+    The fast alternative to the network. Measured against SCUNet on a 3200px
+    working frame: 0.09s against 16s, and it moves the image about as far from
+    the original as SCUNet does. It is NOT the same result -- it takes out the
+    colour blotching and leaves the luma grain, which is the part the eye
+    objects to. See research/denoise-speed/FINDINGS.md, where PSNR could not
+    tell the two apart and only the crops could.
+
+    Chroma tolerates this because the eye has far less acuity for it than for
+    luminance, so filtering it at quarter scale is invisible while costing a
+    sixteenth of the work. Luminance is used as the guide, which is what keeps
+    colour from bleeding across edges.
+    """
+    a = arr.astype(np.float32, copy=False)
+    h, w = a.shape[:2]
+    y = 0.299 * a[..., 0] + 0.587 * a[..., 1] + 0.114 * a[..., 2]
+    cb, cr = a[..., 2] - y, a[..., 0] - y
+
+    # Shrinking needs room for the filter window on both sides of the result.
+    factor = max(1, min(factor, h // (4 * radius + 4) or 1, w // (4 * radius + 4) or 1))
+    sh, sw = max(1, h // factor), max(1, w // factor)
+
+    def shrink(x):
+        if factor == 1:
+            return x
+        t = torch.from_numpy(np.ascontiguousarray(x))[None, None]
+        return torch.nn.functional.interpolate(t, size=(sh, sw), mode="area")[0, 0].numpy()
+
+    def grow(x):
+        if factor == 1:
+            return x
+        t = torch.from_numpy(np.ascontiguousarray(x))[None, None]
+        return torch.nn.functional.interpolate(
+            t, size=(h, w), mode="bilinear", align_corners=False)[0, 0].numpy()
+
+    guide = shrink(y)
+    mean_g = _box(guide, radius)
+    var_g = _box(guide * guide, radius) - mean_g * mean_g
+
+    def filt(chan):
+        c = shrink(chan)
+        mean_c = _box(c, radius)
+        cov = _box(guide * c, radius) - mean_g * mean_c
+        A = cov / (var_g + eps)
+        B = mean_c - A * mean_g
+        # A and B are smoothed before being grown, so the filter varies
+        # gently rather than showing the block structure of the small grid.
+        return grow(_box(A, radius)) * y + grow(_box(B, radius))
+
+    cb2, cr2 = filt(cb), filt(cr)
+    out = np.empty_like(a)
+    out[..., 0] = y + cr2
+    out[..., 2] = y + cb2
+    # Green is recovered from the luminance identity, so Y is preserved
+    # exactly and no luminance detail is touched.
+    out[..., 1] = (y - 0.299 * out[..., 0] - 0.114 * out[..., 2]) / 0.587
+    return np.clip(out, 0, 1)
+
+
+def denoise(arr: np.ndarray, progress=None, method: str | None = None) -> np.ndarray:
     """(H, W, 3) float32 in [0,1] -> denoised, same shape.
 
     Tiled with feathered overlap when the image is large. A hard tile grid
     leaves visible seams in smooth areas; weighting each tile by a ramp and
     normalising by the accumulated weight removes them.
+
+    `method` picks the engine: "quality" runs the network, "fast" runs the
+    guided chroma filter instead. Unset takes it from settings.
     """
+    if (method or _configured_method()) == "fast":
+        out = guided_chroma(arr)
+        if progress:
+            progress(1, 1)
+        return out
+
     h, w = arr.shape[:2]
     if max(h, w) <= TILE:
         t = torch.from_numpy(np.ascontiguousarray(arr)).permute(2, 0, 1).unsqueeze(0)

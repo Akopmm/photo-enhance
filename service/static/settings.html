@@ -135,6 +135,20 @@
       to grade the subject, the sky, foliage and depth separately. Classic skips them entirely.
     </div>
 
+    <label for="denoise_method">Denoise engine</label>
+    <select id="denoise_method" name="denoise_method">
+      <option value="quality">Quality &mdash; neural denoiser</option>
+      <option value="fast">Fast &mdash; guided chroma filter</option>
+    </select>
+    <div class="hint">
+      Denoising is almost all of a render: on a 3200&nbsp;px frame the neural denoiser
+      takes ~16&nbsp;s against ~0.1&nbsp;s for the chroma filter, and at full resolution
+      it is minutes. They are not the same picture, though &mdash; the fast filter clears
+      the colour blotching and leaves the fine grain, which is the part the eye tends to
+      notice. Quality is the default; switch to Fast when you want the export now and can
+      live with grain.
+    </div>
+
     <div class="check"><input type="checkbox" id="subject_masking" name="subject_masking" />
       <label for="subject_masking" style="margin:0">Subject masking (selective colour, subject pop)</label></div>
     <div class="check"><input type="checkbox" id="sky_masking" name="sky_masking" />
@@ -220,6 +234,7 @@ async function load() {
   if (s.is_admin) {
     document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'block');
     document.getElementById('mode').value = s.mode;
+    document.getElementById('denoise_method').value = s.denoise_method || 'quality';
     for (const k of ['subject_masking', 'sky_masking', 'depth_masking', 'cinematic_presets']) {
       document.getElementById(k).checked = !!s[k];
     }
