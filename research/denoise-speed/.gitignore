@@ -1,0 +1,5 @@
+# Comparison sheets are crops of whatever photo you pointed PHOTO at. They are
+# generated, and they are your pictures -- this repository is public.
+*.png
+*.npy
+*.npy.time

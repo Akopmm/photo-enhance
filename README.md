@@ -216,6 +216,20 @@ Switch in **Settings**. Defaults to `classic`.
 
 ---
 
+## Research
+
+`research/` holds experiments that changed a decision, or that failed to. Each
+one keeps its scripts and a `FINDINGS.md` recording what was asked, what was
+measured, and what was concluded — wrong turns included, since those are
+usually the part worth keeping.
+
+The first one, `research/denoise-speed`, asks whether renders can reach seconds
+with cheaper denoising. Short answer: no substitute for the denoiser was found,
+and the idea that looked like a 46× win turned out to be worth half a second
+once it was measured against the path renders actually take. Denoise is 99.7%
+of a full-resolution render, and the preset sizes already denoise at the
+delivered resolution, which is the most valuable thing they could do.
+
 ## Running it
 
 ### Docker (recommended)
