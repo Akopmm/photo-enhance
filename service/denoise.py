@@ -29,6 +29,8 @@ import os
 import sys
 
 import numpy as np
+
+import ov_infer
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -184,7 +186,10 @@ def _run(t: torch.Tensor) -> torch.Tensor:
     if t.shape[2] == TILE and t.shape[3] == TILE:
         comp = _openvino_tile_model()
         if comp is not None:
-            arr = comp(t.numpy())[comp.output(0)]
+            # Not comp(...): that shares one infer request across every
+            # thread, and a second concurrent render then fails outright
+            # with "Infer Request is busy".
+            arr = ov_infer.infer(comp, "denoise_tile", t.numpy())
             return torch.from_numpy(arr)[:, :, :h, :w].clamp(0, 1)
     out = _model()(t.to(_device())).cpu()
     return out[:, :, :h, :w].clamp(0, 1)
