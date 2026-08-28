@@ -56,8 +56,26 @@ class MainActivity : AppCompatActivity() {
         // stays wedged and never opens again.
         val cb = filePicker
         filePicker = null
-        cb?.onReceiveValue(
-            WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data))
+        val uris = chosenFiles(result.resultCode, result.data)
+        android.util.Log.i(TAG, "file chooser returned ${uris?.size ?: 0} item(s)")
+        cb?.onReceiveValue(uris)
+    }
+
+    /**
+     * The files the picker came back with.
+     *
+     * Not FileChooserParams.parseResult: that reads only Intent.getData() and
+     * ignores getClipData(). The page's input is `multiple`, so the intent
+     * carries EXTRA_ALLOW_MULTIPLE, and the picker then answers in clipData —
+     * even when one file is chosen. parseResult therefore returns nothing at
+     * all, and picking a photo appears to do nothing.
+     */
+    private fun chosenFiles(resultCode: Int, data: Intent?): Array<Uri>? {
+        if (resultCode != android.app.Activity.RESULT_OK || data == null) return null
+        data.clipData?.let { clip ->
+            if (clip.itemCount > 0) return Array(clip.itemCount) { clip.getItemAt(it).uri }
+        }
+        return data.data?.let { arrayOf(it) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -263,7 +281,15 @@ class MainActivity : AppCompatActivity() {
                 // Without this the Upload button opens nothing at all.
                 filePicker?.onReceiveValue(null)
                 filePicker = callback
-                return runCatching { pickFiles.launch(params.createIntent()); true }
+                val intent = params.createIntent()
+                // The page accepts ".cr3,.arw,.dng,…" — file extensions, not
+                // MIME types. Android cannot map those, so the intent can end
+                // up with a type that matches nothing and a picker showing an
+                // empty folder. Fall back to letting any file be chosen.
+                if (intent.type?.contains('/') != true) intent.type = "*/*"
+                android.util.Log.i(TAG, "file chooser: type=${intent.type} " +
+                    "multiple=${intent.getBooleanExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)}")
+                return runCatching { pickFiles.launch(intent); true }
                     .getOrElse { filePicker = null; false }
             }
         }
