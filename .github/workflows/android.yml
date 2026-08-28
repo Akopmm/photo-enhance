@@ -1,0 +1,45 @@
+name: Build Android APK
+
+# Only when the app changes. The image build is a separate workflow, and
+# android/ is excluded from its Docker context, so an app-only commit would
+# otherwise rebuild and republish a byte-identical server image.
+on:
+  push:
+    branches: [main]
+    paths: ['android/**', '.github/workflows/android.yml']
+  pull_request:
+    paths: ['android/**', '.github/workflows/android.yml']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      # The address parsing decides what every install talks to, and a wrong
+      # guess there fails as a connection error that looks like a network
+      # fault rather than a bug.
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
+      - name: Build APK
+        run: ./gradlew :app:assembleDebug --no-daemon
+
+      # Debug-signed: installable by sideloading, which is how this is
+      # distributed. Signing for Play would need a keystore secret, and there
+      # is nothing to publish it to.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: photo-enhance-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
