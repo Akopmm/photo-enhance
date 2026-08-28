@@ -89,8 +89,11 @@ if __name__ == "__main__":
             try:
                 fn()
                 print(f"PASS {name}")
-            except AssertionError as exc:
+            except Exception as exc:  # noqa: BLE001
+                # Not just AssertionError: a test that raises NameError or
+                # ImportError has found something too, and should say which
+                # test it was rather than dumping a bare traceback.
                 failures += 1
-                print(f"FAIL {name}: {exc}")
+                print(f"FAIL {name}: {type(exc).__name__}: {exc}")
     print("all passed" if not failures else f"{failures} failed")
     sys.exit(1 if failures else 0)
