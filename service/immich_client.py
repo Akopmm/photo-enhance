@@ -6,6 +6,7 @@ Endpoints below were verified against a live Immich 3.1.0 instance's real
 OpenAPI spec (GET /api/spec.json), not guessed from memory:
   - auth: header "x-api-key"
   - GET  /api/albums                 -> list albums
+  - POST /api/search/smart           -> CLIP search by description ("pizza")
   - POST /api/search/metadata        -> paginated asset search (by album,
                                          date range, camera make/model, etc.),
                                          returns {assets: {items: [...]}, ...}
@@ -58,6 +59,24 @@ async def search_assets(username: str, album_id: str | None = None, page: int = 
         body["albumIds"] = [album_id]
     async with _client(username) as c:
         r = await c.post("/search/metadata", json=body)
+        r.raise_for_status()
+        return r.json()
+
+
+async def search_smart(username: str, query: str, album_id: str | None = None,
+                       page: int = 1, size: int = 60) -> dict:
+    """Immich's own CLIP search -- the one its web UI runs for a typed phrase.
+
+    Returns the same SearchResponseDto shape as /search/metadata, so callers
+    parse it identically. Note it ranks rather than filters: every photo has
+    some similarity to any phrase, so the tail of a large page is noise. Keep
+    pages small and let people ask for more.
+    """
+    body = {"query": query, "page": page, "size": size, "type": "IMAGE"}
+    if album_id:
+        body["albumIds"] = [album_id]
+    async with _client(username) as c:
+        r = await c.post("/search/smart", json=body)
         r.raise_for_status()
         return r.json()
 

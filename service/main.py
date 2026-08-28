@@ -238,10 +238,19 @@ async def immich_albums(user: str = Depends(current_user)):
 
 
 @app.get("/api/immich/search")
-async def immich_search(album_id: str | None = None, page: int = 1, size: int = 100,
-                        user: str = Depends(current_user)):
+async def immich_search(album_id: str | None = None, q: str = "", page: int = 1,
+                        size: int = 100, user: str = Depends(current_user)):
+    query = q.strip()
     try:
-        result = await immich_client.search_assets(user, album_id=album_id, page=page, size=size)
+        if query:
+            # Smart search ranks the whole library rather than filtering it, so
+            # a 100-wide page would be mostly things that merely resemble the
+            # phrase. A shorter page keeps the grid honest.
+            result = await immich_client.search_smart(
+                user, query, album_id=album_id, page=page, size=min(size, 60))
+        else:
+            result = await immich_client.search_assets(
+                user, album_id=album_id, page=page, size=size)
     except immich_client.NoCredentials as e:
         raise HTTPException(400, str(e))
     except Exception as e:
