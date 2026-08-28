@@ -83,6 +83,49 @@ which is most of what the eye objects to.
 `crops.py` shows the same at full sensor resolution, where the gap is wider
 still.
 
+## Why every "denoise smaller" idea failed
+
+Three variants were tried that all shrink the image before the network:
+residual ½, residual ¼, and a hybrid giving chroma to the guided filter and
+luma to SCUNet at reduced resolution. The hybrid is the interesting one,
+because it hands the network only the job the filter cannot do.
+
+| variant | time | vs reference | strength |
+|---|---|---|---|
+| SCUNet at 3200 | 16.03 s | — | 29.52 dB |
+| hybrid: filter + luma net ½ | 6.41 s | 35.99 dB | 30.50 dB |
+| hybrid: filter + luma net ¼ | 1.83 s | 35.30 dB | 30.53 dB |
+| guided chroma alone | 0.09 s | 35.08 dB | 30.56 dB |
+
+All three score the same as the filter **alone**, and the crops confirm it:
+adding the network changed nothing a viewer could see. Running SCUNet on luma
+at half resolution bought 6.3 seconds of nothing.
+
+The reason is structural, and it explains every earlier residual result too:
+
+> **Grain is high-frequency. Downsampling destroys it before the network sees
+> it.** The shrunken image has no grain left to remove, so the network's
+> output barely differs from its input, the residual is close to zero, and
+> upsampling that residual adds nothing back.
+
+So the family of ideas is dead, not merely untuned. Any scheme that reduces
+resolution before the network cannot remove grain, because the grain lives
+precisely in the resolution being discarded. The network has to see
+full-resolution pixels to fix full-resolution noise, and its cost is therefore
+inherent in the pixel count.
+
+That leaves three real levers, and only one of them is unexplored:
+
+1. **Denoise at the delivered size.** Already done — the presets resize before
+   denoising, which is why a Medium render is 35 tiles and not 140.
+2. **Accept the grain.** That is `denoise_method: fast`, the guided chroma
+   filter, at 176x.
+3. **A cheaper network per pixel** — untested here. SCUNet is 17.9M parameters
+   with no internal downsampling, which is exactly what makes it expensive.
+   FFDNet (~0.5M, operates on a pixel-shuffled sub-image) and DRUNet (a U-Net
+   that does downsample) are non-blind, taking a noise level the service
+   already estimates. This is the remaining avenue.
+
 ## Conclusion
 
 - No cheap substitute for SCUNet was found. Guided chroma is a real option for
