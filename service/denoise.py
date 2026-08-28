@@ -27,7 +27,6 @@ and preview inherits the result for free. Full-resolution renders tile it.
 import logging
 import os
 import sys
-
 import threading
 
 import numpy as np
@@ -40,6 +39,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 logger = logging.getLogger("photo-enhance.denoise")
 
 _cache = {}
+# Guards the one-off OpenVINO conversion; see _openvino_tile_model.
+_build_lock = threading.Lock()
 
 # SCUNet downsamples three times, so both edges must be a multiple of 8.
 _ALIGN = 8

@@ -41,6 +41,16 @@ def _restore(monkey):
     denoise.ov_infer.infer = monkey["infer"]
 
 
+def test_the_real_accelerator_lookup_runs():
+    # The other tests stub _openvino_tile_model out, so none of them execute
+    # it. A version shipped that referenced a lock it never defined: every
+    # call raised NameError, every GPU denoise failed, and the whole suite
+    # stayed green. This calls the real thing. It returns None on a machine
+    # with no iGPU, which is fine -- the point is that it returns.
+    result = denoise._openvino_tile_model()
+    assert result is None or hasattr(result, "create_infer_request"), result
+
+
 def test_a_good_tile_is_used_as_is():
     monkey = {}
     tile = torch.full((1, 3, denoise.TILE, denoise.TILE), 0.5)
@@ -89,8 +99,11 @@ if __name__ == "__main__":
             try:
                 fn()
                 print(f"PASS {name}")
-            except AssertionError as exc:
+            except Exception as exc:  # noqa: BLE001
+                # Not just AssertionError: a test that raises NameError or
+                # ImportError has found something too, and should say which
+                # test it was rather than dumping a bare traceback.
                 failures += 1
-                print(f"FAIL {name}: {exc}")
+                print(f"FAIL {name}: {type(exc).__name__}: {exc}")
     print("all passed" if not failures else f"{failures} failed")
     sys.exit(1 if failures else 0)
