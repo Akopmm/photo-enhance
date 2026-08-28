@@ -6,6 +6,11 @@ on:
     # The Android app is not in this image's build context, so a commit that
     # only touches it would republish a byte-identical image.
     paths-ignore: ['android/**', '.github/workflows/android.yml']
+  # Pull requests run the checks but do not publish. Without this the tests
+  # only ran after a merge, which is the wrong side of the decision: a branch
+  # could be reviewed, merged, and only then found to be broken.
+  pull_request:
+    paths-ignore: ['android/**', '.github/workflows/android.yml']
 
 jobs:
   build:
@@ -115,6 +120,7 @@ jobs:
           exit $status
 
       - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -122,6 +128,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        if: github.event_name == 'push'
         uses: docker/build-push-action@v5
         with:
           context: .
