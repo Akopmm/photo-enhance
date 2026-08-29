@@ -192,6 +192,14 @@ def estimate_sigma(arr: np.ndarray) -> float:
     a = np.clip(arr, 0, 1)
     if a.ndim == 2:
         a = a[..., None]
+    # Sample by decimation, never by resizing. Taking every k-th pixel leaves
+    # each remaining pixel's noise exactly as it was, while a downscale
+    # averages neighbours together and reports a frame far cleaner than the
+    # one being exported -- which is how a genuinely noisy photo measured
+    # under the threshold and was skipped.
+    k = max(1, round(max(a.shape[:2]) / SIGMA_SAMPLE_EDGE))
+    if k > 1:
+        a = a[::k, ::k]
     bs = 32
     h, w = a.shape[:2]
     if h < bs * 2 or w < bs * 2:
@@ -257,6 +265,10 @@ def _blend_window(n: int, lead: int, trail: int) -> np.ndarray:
 # warm indoor frame, 1.24 on a dim one. That is a better footing than the
 # single frame the 2.0 came from, though still only two.
 FFDNET_SIGMA_SCALE = 1.2
+
+# Long edge the estimator samples down to. Measuring all 26 million pixels
+# takes 0.6s and says the same thing as 0.06s of every third one.
+SIGMA_SAMPLE_EDGE = 2000
 
 # Below this the model is being asked to remove almost nothing, and the
 # estimator is noisier than the noise at that point.
