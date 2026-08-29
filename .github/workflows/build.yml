@@ -81,6 +81,7 @@ jobs:
           python tests/denoise_shape_test.py
           python tests/ov_concurrency_test.py
           python tests/guided_chroma_test.py
+          python tests/ffdnet_test.py
 
       # research/ imports from service/, so renaming anything it calls breaks
       # it silently. Importing costs a second and catches that; running them

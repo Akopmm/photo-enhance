@@ -222,6 +222,52 @@ def _blend_window(n: int, lead: int, trail: int) -> np.ndarray:
 
 
 
+# FFDNet takes the noise level as an input, and the estimator here reports the
+# standard deviation of the flattest blocks. Those are not the same number: a
+# real sensor's noise is signal-dependent and not the white Gaussian FFDNet
+# was trained on, so feeding the raw estimate leaves the result visibly
+# under-denoised. Twice the estimate matched SCUNet closely on the frame this
+# was calibrated against -- ONE frame, which is the weakest part of this and
+# is written down as such in research/denoise-speed/FINDINGS.md.
+FFDNET_SIGMA_SCALE = 2.0
+
+# Below this the model is being asked to remove almost nothing, and the
+# estimator is noisier than the noise at that point.
+FFDNET_MIN_SIGMA = 1.0
+
+
+def _ffdnet_model():
+    if "ffdnet" in _cache:
+        return _cache["ffdnet"]
+    with _build_lock:
+        if "ffdnet" in _cache:
+            return _cache["ffdnet"]
+        from vendor.network_ffdnet import FFDNet
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "weights", "ffdnet_color.pth")
+        m = FFDNet(in_nc=3, out_nc=3, nc=96, nb=12, act_mode="R")
+        m.load_state_dict(torch.load(path, map_location="cpu"))
+        m.eval().to(_device())
+        _cache["ffdnet"] = m
+        logger.info("ffdnet loaded from %s", path)
+        return m
+
+
+@torch.no_grad()
+def _run_ffdnet(t: torch.Tensor, sigma8: float) -> torch.Tensor:
+    """One tile through FFDNet. `sigma8` is the noise level in 8-bit units."""
+    m = _ffdnet_model()
+    _, _, h, w = t.shape
+    # The pixel-shuffle needs even dimensions.
+    ph, pw = (-h) % 2, (-w) % 2
+    if ph or pw:
+        t = torch.nn.functional.pad(t, (0, pw, 0, ph), mode="reflect")
+    dev = _device()
+    level = torch.full((1, 1, 1, 1), sigma8 / 255.0, device=dev)
+    out = m(t.to(dev), level).cpu()
+    return out[:, :, :h, :w].clamp(0, 1)
+
+
 def _configured_method() -> str:
     try:
         import settings
@@ -307,19 +353,35 @@ def denoise(arr: np.ndarray, progress=None, method: str | None = None) -> np.nda
     leaves visible seams in smooth areas; weighting each tile by a ramp and
     normalising by the accumulated weight removes them.
 
-    `method` picks the engine: "quality" runs the network, "fast" runs the
-    guided chroma filter instead. Unset takes it from settings.
+    `method` picks the engine, unset taking it from settings:
+
+      quality  -- SCUNet. 3.40s a tile on the optiplex iGPU, 476s for 26MP.
+      balanced -- FFDNet. 0.30s a tile, 41.6s for 26MP, and measured 43.25 dB
+                  from SCUNet's output on the calibration frame.
+      fast     -- the guided chroma filter. No network, ~0.1s, and it leaves
+                  the luma grain rather than removing it.
     """
-    if (method or _configured_method()) == "fast":
+    method = method or _configured_method()
+    if method == "fast":
         out = guided_chroma(arr)
         if progress:
             progress(1, 1)
         return out
 
+    # FFDNet is non-blind, so the level is measured once for the whole frame
+    # rather than per tile -- a tile of sky and a tile of foliage would
+    # otherwise be told they carry different noise and be smoothed unequally.
+    tile_sigma = None
+    if method == "balanced":
+        tile_sigma = max(estimate_sigma(arr) * FFDNET_SIGMA_SCALE, FFDNET_MIN_SIGMA)
+
     h, w = arr.shape[:2]
+    def run_tile(t):
+        return _run_ffdnet(t, tile_sigma) if tile_sigma is not None else _run(t)
+
     if max(h, w) <= TILE:
         t = torch.from_numpy(np.ascontiguousarray(arr)).permute(2, 0, 1).unsqueeze(0)
-        return _run(t).squeeze(0).permute(1, 2, 0).numpy()
+        return run_tile(t).squeeze(0).permute(1, 2, 0).numpy()
 
     step = TILE - OVERLAP
     ys = list(range(0, max(h - OVERLAP, 1), step))
@@ -334,7 +396,7 @@ def denoise(arr: np.ndarray, progress=None, method: str | None = None) -> np.nda
             y0, x0 = max(0, y1 - TILE), max(0, x1 - TILE)
             tile = arr[y0:y1, x0:x1]
             t = torch.from_numpy(np.ascontiguousarray(tile)).permute(2, 0, 1).unsqueeze(0)
-            out = _run(t).squeeze(0).permute(1, 2, 0).numpy()
+            out = run_tile(t).squeeze(0).permute(1, 2, 0).numpy()
             wy = _blend_window(y1 - y0, OVERLAP if y0 > 0 else 0, OVERLAP if y1 < h else 0)
             wx = _blend_window(x1 - x0, OVERLAP if x0 > 0 else 0, OVERLAP if x1 < w else 0)
             wt = (wy[:, None] * wx[None, :])[..., None]
