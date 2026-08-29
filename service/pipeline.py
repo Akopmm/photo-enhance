@@ -890,7 +890,12 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
             baseline = await asyncio.to_thread(_resize_tensor, baseline, want)
             _say(_stage(50, 14), f"Sizing to {_size['label']}")
 
-        if _dn_meta.get("available") and float(_dn_amt) > 0:
+        # An explicit request wins. `available` is what the import GUESSED,
+        # from a measurement made once and then frozen -- and when that
+        # measurement was wrong, every download of that photo silently
+        # skipped denoising at any slider position, in any mode. The flag
+        # still chooses the default; it does not get a veto.
+        if float(_dn_amt) > 0:
             _say(14, "Removing noise")
             base_np = baseline.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
 

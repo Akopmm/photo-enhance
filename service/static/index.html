@@ -704,19 +704,18 @@ async function openEditor(importId) {
   $('head-title').textContent = meta.source_name || 'photo';
   $('strength').value = 100;
   $('strength-out').textContent = '100%';
-  // Only offered when the import actually measured noisy -- a denoise slider
-  // on a clean daylight frame is a control that can only make things worse.
+  // Always offered, defaulting to what the import suggested -- 0% for a
+  // frame it judged clean. It used to be hidden entirely unless the import
+  // said "available", which meant a photo measured wrongly at import time
+  // could never be denoised at all, however noisy it plainly was.
   const dn = meta.denoise || {};
-  if (dn.available) {
-    state.denoise = Math.round((dn.amount ?? 0.9) * 100);
-    $('denoise-panel').hidden = false;
-    $('denoise').value = state.denoise;
-    $('denoise-out').textContent = state.denoise + '%';
-    $('denoise-hint').textContent = `noise ${Number(dn.sigma).toFixed(1)}`;
-  } else {
-    state.denoise = null;
-    $('denoise-panel').hidden = true;
-  }
+  state.denoise = Math.round((dn.amount ?? 0) * 100);
+  $('denoise-panel').hidden = false;
+  $('denoise').value = state.denoise;
+  $('denoise-out').textContent = state.denoise + '%';
+  $('denoise-hint').textContent = dn.sigma
+    ? `noise ${Number(dn.sigma).toFixed(1)}`
+    : 'measured clean';
   $('hero-orig').src = `/api/gallery/${meta.id}/original_thumb.jpg`;
   paintProgress();
   renderGroups();
