@@ -81,6 +81,12 @@ def main() -> int:
         ("GET", "/api/immich/search", {"q": "pizza"}),
         ("GET", "/api/immich/search", {"q": "beach at sunset", "album_id": "abc",
                                        "page": "2", "size": "60"}),
+        # A photo the import judged clean must still honour an explicit
+        # denoise request. It used to be vetoed by the stored flag, so any
+        # photo measured wrongly at import could never be denoised again --
+        # the slider moved and the downloaded file was identical.
+        ("POST", "/api/render", {"import_id": imp, "style_key": "punch",
+                                 "denoise": "1.0"}),
         # the download job, with every parameter the editor can attach
         ("POST", "/api/render", {"import_id": imp, "style_key": "punch"}),
         ("POST", "/api/render", {"import_id": imp, "style_key": "punch",
