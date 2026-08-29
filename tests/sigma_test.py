@@ -66,6 +66,30 @@ def test_detail_is_not_mistaken_for_noise():
     assert dn.estimate_sigma(busy) < 1.5, "hard edges were counted as noise"
 
 
+def test_sampling_does_not_hide_the_noise():
+    """A large frame is sampled, and sampling must not soften it.
+
+    Decimation keeps each sampled pixel exactly as it was; a resize would
+    average neighbours and report a cleaner photo than the one being
+    exported. That distinction is the whole reason a noisy frame was skipped,
+    so it is pinned here: the same noise must read the same at any size.
+    """
+    small = _add(_flat(512, 512), 6.0, [0, 1, 2], seed=5)
+    big = np.repeat(np.repeat(small, 6, axis=0), 6, axis=1)   # 3072px, same pixels
+    a, b = dn.estimate_sigma(small), dn.estimate_sigma(big)
+    assert abs(a - b) < 1.5, f"sampling changed the reading: {a:.2f} vs {b:.2f}"
+    assert b > 4.0, f"the large frame under-reported: {b:.2f}"
+
+
+def test_sampling_keeps_it_cheap():
+    import time
+    big = _add(_flat(4000, 6000), 5.0, [0, 1, 2], seed=6)
+    t0 = time.time()
+    dn.estimate_sigma(big)
+    took = time.time() - t0
+    assert took < 2.0, f"estimating a 24MP frame took {took:.2f}s"
+
+
 def test_small_frames_do_not_crash():
     for h, w in [(8, 8), (63, 63), (64, 64), (1, 1)]:
         v = dn.estimate_sigma(np.full((h, w, 3), 0.5, np.float32))

@@ -575,7 +575,15 @@ async def process_preview(raw_bytes: bytes, filename: str, source_type: str,
         hero_for_noise = await asyncio.to_thread(_resize_tensor, baseline, HERO_EDGE)
         dn_src = await asyncio.to_thread(_resize_tensor, hero_for_noise, DENOISE_PREVIEW_EDGE)
         probe = dn_src.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
-        do_dn, sigma = await asyncio.to_thread(_should_denoise, probe)
+        # Measured on the FULL-resolution baseline, not on `probe`. The
+        # decision is "is this photo noisy", and the answer has to be about
+        # the photo: a preview is a fifth of the size, and downscaling
+        # averages noise away, so a frame reading 3.37 natively reported 2.47
+        # here and was exported having never been denoised. The estimator
+        # samples by decimation, so this costs ~0.06s rather than 0.6s.
+        gate_src = baseline.clamp(0, 1).squeeze(0).permute(1, 2, 0).numpy()
+        do_dn, sigma = await asyncio.to_thread(_should_denoise, gate_src)
+        gate_src = None
         default_amount = _default_denoise_amount(sigma)
         denoise_meta = {"available": bool(do_dn), "sigma": round(sigma, 2),
                         "amount": default_amount}
