@@ -254,17 +254,21 @@ def _blend_window(n: int, lead: int, trail: int) -> np.ndarray:
 
 
 
-# FFDNet takes the noise level as an input, and the estimator reports the
-# standard deviation of the flattest blocks. Those are not the same number: a
-# real sensor's noise is signal-dependent, not the white Gaussian FFDNet was
-# trained on, so the raw estimate leaves the result under-denoised.
+# FFDNet is non-blind: it denoises to the level it is told. What to tell it
+# is the whole question, and a multiple of the global estimate is the wrong
+# answer -- measured on three photos through the download path:
 #
-# Was 2.0 against the old greyscale estimator. That estimator under-reported
-# by about 1.7x by averaging the channels together, so the equivalent factor
-# on the per-channel one is ~1.2. Two very different photos agree: 1.13 on a
-# warm indoor frame, 1.24 on a dim one. That is a better footing than the
-# single frame the 2.0 came from, though still only two.
-FFDNET_SIGMA_SCALE = 1.2
+#   noisy.cr3   global 8.6, shadows 24.4   1.2x left shadows at 11.33
+#   IMG_1114    global 10.2, shadows 10.2  2.5x cut detail 11.13 -> 6.51
+#
+# Two photos with almost the same global figure needing opposite treatment,
+# because the figure says nothing about WHERE the noise is. The estimator
+# reports a floor from the flattest blocks, and in a dark frame those are the
+# quiet bright areas while the shadows carry three times as much.
+#
+# So the level comes from the shadow band itself. See
+# research/denoise-speed/FINDINGS.md for the validation.
+SHADOW_BAND = (0.15, 0.35)
 
 # Long edge the estimator samples down to. Measuring all 26 million pixels
 # takes 0.6s and says the same thing as 0.06s of every third one.
@@ -273,6 +277,48 @@ SIGMA_SAMPLE_EDGE = 2000
 # Below this the model is being asked to remove almost nothing, and the
 # estimator is noisier than the noise at that point.
 FFDNET_MIN_SIGMA = 1.0
+
+
+def shadow_sigma(arr: np.ndarray) -> float:
+    """Noise in the shadow band, or the global figure when there is no shadow.
+
+    The level to hand a non-blind denoiser. Shadows are where sensor noise is
+    worst -- it is signal-dependent, so the read noise floor dominates where
+    there is least signal -- and where the eye finds it. A global estimate
+    taken from the flattest blocks measures the calm bright areas instead and
+    under-serves exactly the region that needs help.
+
+    Never returns less than the global estimate, so a photo with no shadows to
+    speak of is treated no worse than before.
+    """
+    a = np.clip(arr, 0, 1)
+    if a.ndim == 2:
+        a = a[..., None]
+    k = max(1, round(max(a.shape[:2]) / SIGMA_SAMPLE_EDGE))
+    if k > 1:
+        a = a[::k, ::k]
+    bs = 32
+    h, w = a.shape[:2]
+    glob = estimate_sigma(arr)
+    if h < bs * 2 or w < bs * 2:
+        return glob
+
+    lo, hi = SHADOW_BAND
+    worst = 0.0
+    for c in range(a.shape[2]):
+        g = (a[..., c] * 255).astype(np.float32)
+        blocks = (g[:h // bs * bs, :w // bs * bs]
+                  .reshape(h // bs, bs, w // bs, bs).swapaxes(1, 2).reshape(-1, bs * bs))
+        lum = blocks.mean(1) / 255.0
+        sel = blocks[(lum >= lo) & (lum < hi)]
+        if len(sel) < 10:
+            continue
+        flat = sel[sel.var(1) <= np.percentile(sel.var(1), 30)]
+        if not len(flat):
+            continue
+        worst = max(worst, float(
+            np.median(np.abs(flat - flat.mean(1, keepdims=True))) * 1.4826))
+    return max(worst, glob)
 
 
 def _ffdnet_model():
@@ -461,7 +507,7 @@ def denoise(arr: np.ndarray, progress=None, method: str | None = None) -> np.nda
     # otherwise be told they carry different noise and be smoothed unequally.
     tile_sigma = None
     if method == "balanced":
-        tile_sigma = max(estimate_sigma(arr) * FFDNET_SIGMA_SCALE, FFDNET_MIN_SIGMA)
+        tile_sigma = max(shadow_sigma(arr), FFDNET_MIN_SIGMA)
 
     h, w = arr.shape[:2]
     def run_tile(t):
