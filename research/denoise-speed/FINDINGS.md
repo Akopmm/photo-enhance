@@ -186,6 +186,35 @@ Three things this measurement does NOT establish:
 - `size=original` remains expensive (~9 min for 26 MP) and is inherent: full
   resolution and cheap denoising are the same trade-off in different words.
 
+## Every wrong answer here failed the same way
+
+Four findings in this investigation were reported confidently and were wrong.
+Each was a real measurement of the wrong thing.
+
+| claimed | measured | what the download actually did |
+|---|---|---|
+| half-size decode is 46x faster | against `size=original` | presets already resize; worth 0.53s |
+| the estimator is fine | greyscale average | channel noise cancels; 3.37 read as 1.91 |
+| the gate is fine once the estimator is | the 1280px preview | downscaling averages noise; 3.37 read as 2.47 |
+| balanced matches quality | the decoded image, sigma 9.5 | denoise runs AFTER the colour model, at sigma 24 |
+
+The pattern is not carelessness about any one number. It is that a component
+can be measured correctly and still say nothing about the product, and there
+was no habit of checking the product. `validate.py` exists to be that habit:
+it renders through `render_full_style`, the function the download button
+calls, and measures the JPEG that comes out.
+
+Two things it measures that a single figure hides:
+
+* **Noise per brightness band.** A dark indoor frame measured 0.93 overall and
+  carried 11.33 in its shadows. Overall figures average the shadows, where
+  noise lives, into the bright areas that dominate the block count.
+* **Detail as well as noise.** Both are high-frequency, so "less noise" and
+  "less detail" are the same measurement unless they are taken separately --
+  noise in the flattest blocks, detail in the busiest. Every scale above 2.5
+  beat SCUNet on noise while scoring below it on detail. That is smearing, and
+  a single number calls it an improvement.
+
 ## Method notes
 
 `nets.py` needs the KAIR definitions and weights, neither committed:
