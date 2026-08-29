@@ -117,6 +117,17 @@ def _openvino_tile_model():
             if "GPU" not in core.available_devices:
                 logger.info("denoise: no OpenVINO GPU device, staying on CPU")
                 return None
+            # Converting SCUNet peaks above 12GB, once per process. On a
+            # 15GB box also running Immich that is not a risk, it is an
+            # event: it OOM-killed this service three times in one day, and
+            # the kill lands on whatever the kernel picks, not necessarily
+            # the process that asked for the memory.
+            free = _free_gb()
+            if free is not None and free < SCUNET_GPU_FREE_GB:
+                logger.warning(
+                    "denoise: %.1fGB free, need %.0fGB to convert SCUNet for the "
+                    "iGPU; staying on CPU", free, SCUNET_GPU_FREE_GB)
+                return None
             example = torch.zeros(1, 3, TILE, TILE)
             m = ov.convert_model(_model(), example_input=example)
             _cache["ov"] = core.compile_model(m, "GPU")
@@ -270,6 +281,12 @@ def _blend_window(n: int, lead: int, trail: int) -> np.ndarray:
 # research/denoise-speed/FINDINGS.md for the validation.
 SHADOW_BAND = (0.15, 0.35)
 
+# Headroom required before converting SCUNet for the iGPU. The conversion
+# itself peaks above 12GB; below this there is not enough room to do it
+# without the kernel killing something. FFDNet needs no such guard -- its
+# conversion peaks at 0.70GB, measured.
+SCUNET_GPU_FREE_GB = 13.0
+
 # Long edge the estimator samples down to. Measuring all 26 million pixels
 # takes 0.6s and says the same thing as 0.06s of every third one.
 SIGMA_SAMPLE_EDGE = 2000
@@ -400,6 +417,22 @@ def _run_ffdnet(t: torch.Tensor, sigma8: float) -> torch.Tensor:
     level = torch.full((1, 1, 1, 1), sigma8 / 255.0, device=dev)
     out = m(t.to(dev), level).cpu()
     return out[:, :, :h, :w].clamp(0, 1)
+
+
+def _free_gb():
+    """Memory actually available, or None where that cannot be read.
+
+    MemAvailable rather than MemFree: page cache is reclaimable, and MemFree
+    alone would refuse the conversion on a box that is merely warm.
+    """
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / (1024 * 1024)
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def _configured_method() -> str:

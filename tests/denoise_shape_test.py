@@ -51,6 +51,65 @@ def test_the_real_accelerator_lookup_runs():
     assert result is None or hasattr(result, "create_infer_request"), result
 
 
+def _with_fake_gpu():
+    """Make _openvino_tile_model believe there is an iGPU.
+
+    Without this the function returns at the "no GPU device" check, several
+    lines before the headroom guard, so a test of that guard passes whether
+    the guard exists or not. The first version of these two tests did exactly
+    that -- they stayed green with the guard deleted.
+    """
+    import openvino as ov
+
+    class FakeCore:
+        available_devices = ["CPU", "GPU"]
+
+        def compile_model(self, m, device):
+            return f"compiled-for-{device}"
+
+        def get_property(self, *a):
+            return "fake iGPU"
+
+    saved = (ov.Core, ov.convert_model)
+    ov.Core = FakeCore
+    ov.convert_model = lambda model, example_input=None: "converted"
+    return ov, saved
+
+
+def test_the_scunet_gpu_build_refuses_without_headroom():
+    """Converting SCUNet for the iGPU peaks above 12GB, once per process.
+
+    On a full box that does not fail politely: the kernel kills a process, and
+    not necessarily this one. It killed the service three times in a day.
+    """
+    ov, saved = _with_fake_gpu()
+    free = denoise._free_gb
+    denoise._cache.pop("ov", None)
+    denoise._free_gb = lambda: 4.0          # a full box
+    try:
+        assert denoise._openvino_tile_model() is None, (
+            "converted SCUNet with 4GB free; that is the OOM that killed the service")
+    finally:
+        denoise._free_gb = free
+        ov.Core, ov.convert_model = saved
+        denoise._cache.pop("ov", None)
+
+
+def test_plenty_of_memory_does_not_block_the_gpu_build():
+    # The guard must not become a permanent off switch on a healthy machine.
+    ov, saved = _with_fake_gpu()
+    free = denoise._free_gb
+    denoise._cache.pop("ov", None)
+    denoise._free_gb = lambda: 64.0
+    try:
+        assert denoise._openvino_tile_model() == "compiled-for-GPU", (
+            "the guard blocked a build on a machine with 64GB free")
+    finally:
+        denoise._free_gb = free
+        ov.Core, ov.convert_model = saved
+        denoise._cache.pop("ov", None)
+
+
 def test_a_good_tile_is_used_as_is():
     monkey = {}
     tile = torch.full((1, 3, denoise.TILE, denoise.TILE), 0.5)
