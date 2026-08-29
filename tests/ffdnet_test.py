@@ -70,6 +70,46 @@ def test_the_noise_level_actually_reaches_the_model():
     assert float(high.std()) < float(low.std()), "a higher level denoised less"
 
 
+def test_building_the_gpu_model_does_not_deadlock():
+    """The bug this exists for: _ffdnet_ov held the build lock and then called
+    _ffdnet_model, which takes the same lock. With a plain Lock that hangs the
+    import thread forever, and no local machine could reach it -- the only box
+    with an OpenVINO GPU is the server, and everywhere else _ffdnet_ov returns
+    before that call. So the GPU is faked here, and a deadlock shows up as a
+    thread that will not finish rather than as a hang in the runner.
+    """
+    if not HAVE_WEIGHTS:
+        print("  (skipped: weights not present)")
+        return
+    import threading
+    import openvino as ov
+
+    class FakeCore:
+        available_devices = ["CPU", "GPU"]
+
+        def compile_model(self, m, device):
+            return f"compiled-for-{device}"
+
+        def get_property(self, *a):
+            return "fake iGPU"
+
+    real_core, real_convert = ov.Core, ov.convert_model
+    ov.Core = FakeCore
+    ov.convert_model = lambda model, example_input=None: "converted"
+    dn._cache.pop("ffdnet_ov", None)
+    dn._cache.pop("ffdnet", None)
+    result = {}
+    try:
+        t = threading.Thread(target=lambda: result.update(v=dn._ffdnet_ov()), daemon=True)
+        t.start()
+        t.join(timeout=20)
+        assert not t.is_alive(), "deadlocked building the GPU model"
+        assert result.get("v") == "compiled-for-GPU", result
+    finally:
+        ov.Core, ov.convert_model = real_core, real_convert
+        dn._cache.pop("ffdnet_ov", None)
+
+
 def test_routing_picks_the_right_engine():
     calls = {"scunet": 0, "ffdnet": 0}
     real_run, real_ffd = dn._run, dn._run_ffdnet

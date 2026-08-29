@@ -40,7 +40,13 @@ logger = logging.getLogger("photo-enhance.denoise")
 
 _cache = {}
 # Guards the one-off OpenVINO conversion; see _openvino_tile_model.
-_build_lock = threading.Lock()
+# Reentrant: _ffdnet_ov holds this while calling _ffdnet_model, which takes it
+# again to load the weights. With a plain Lock that is a deadlock, and it is
+# not a subtle one -- the import thread stops forever and the photo sits at
+# "processing" until the container is restarted. It shipped, because the only
+# machine with an OpenVINO GPU is the server: everywhere else _ffdnet_ov
+# returns before reaching that call, so nothing local could reach the bug.
+_build_lock = threading.RLock()
 
 # SCUNet downsamples three times, so both edges must be a multiple of 8.
 _ALIGN = 8
