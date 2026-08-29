@@ -11,7 +11,7 @@
 # Why it is here: SCUNet has no internal downsampling, so its cost scales with
 # pixel count -- 476s for a 26MP frame on the optiplex iGPU. FFDNet works on a
 # 2x2 pixel-shuffled sub-image: a quarter of the spatial positions, while every
-# original pixel still reaches the network. That is what makes it ~11x cheaper
+# original pixel still reaches the network. That is what makes it ~18x cheaper
 # without discarding the grain it exists to remove. See
 # research/denoise-speed/FINDINGS.md.
 import numpy as np

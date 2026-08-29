@@ -253,15 +253,64 @@ def _ffdnet_model():
         return m
 
 
+def _ffdnet_ov():
+    """FFDNet compiled for the iGPU at the fixed tile shape, or None.
+
+    Worth doing here in a way it is not for SCUNet. Converting SCUNet peaks
+    above 12GB and has OOM-killed this service; converting FFDNet takes 2.4s
+    and peaks at 0.70GB, because it is 0.85M parameters rather than 17.9M.
+
+    Measured on the optiplex UHD 630, per 512px tile: torch CPU 0.300s,
+    OpenVINO CPU 0.213s, OpenVINO iGPU 0.190s -- so 26.6s for a 26MP frame
+    against 41.6s on torch, and against 476s for SCUNet on the same iGPU.
+    """
+    if _configured_device() == "cpu":
+        return None
+    if "ffdnet_ov" in _cache:
+        return _cache["ffdnet_ov"]
+    with _build_lock:
+        if "ffdnet_ov" in _cache:
+            return _cache["ffdnet_ov"]
+        _cache["ffdnet_ov"] = None
+        try:
+            import openvino as ov
+            core = ov.Core()
+            if "GPU" not in core.available_devices:
+                logger.info("ffdnet: no OpenVINO GPU device, staying on CPU")
+                return None
+            example = (torch.zeros(1, 3, TILE, TILE), torch.zeros(1, 1, 1, 1))
+            m = ov.convert_model(_ffdnet_model(), example_input=example)
+            _cache["ffdnet_ov"] = core.compile_model(m, "GPU")
+            logger.info("ffdnet: compiled for iGPU (%s)",
+                        core.get_property("GPU", "FULL_DEVICE_NAME"))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ffdnet: iGPU unavailable (%s), staying on CPU", e)
+            _cache["ffdnet_ov"] = None
+        return _cache["ffdnet_ov"]
+
+
 @torch.no_grad()
 def _run_ffdnet(t: torch.Tensor, sigma8: float) -> torch.Tensor:
     """One tile through FFDNet. `sigma8` is the noise level in 8-bit units."""
-    m = _ffdnet_model()
     _, _, h, w = t.shape
     # The pixel-shuffle needs even dimensions.
     ph, pw = (-h) % 2, (-w) % 2
     if ph or pw:
         t = torch.nn.functional.pad(t, (0, pw, 0, ph), mode="reflect")
+
+    # The compiled model is built at one fixed tile shape, which is what makes
+    # the GPU plugin worth using; anything else goes to torch.
+    if t.shape[2] == TILE and t.shape[3] == TILE:
+        comp = _ffdnet_ov()
+        if comp is not None:
+            level = np.full((1, 1, 1, 1), sigma8 / 255.0, dtype=np.float32)
+            arr = ov_infer.infer(comp, "ffdnet_tile", {0: t.numpy(), 1: level})
+            if arr.shape == tuple(t.shape):
+                return torch.from_numpy(arr)[:, :, :h, :w].clamp(0, 1)
+            logger.error("ffdnet: iGPU returned %s for a %s tile, using CPU "
+                         "for this one", arr.shape, tuple(t.shape))
+
+    m = _ffdnet_model()
     dev = _device()
     level = torch.full((1, 1, 1, 1), sigma8 / 255.0, device=dev)
     out = m(t.to(dev), level).cpu()
@@ -356,7 +405,7 @@ def denoise(arr: np.ndarray, progress=None, method: str | None = None) -> np.nda
     `method` picks the engine, unset taking it from settings:
 
       quality  -- SCUNet. 3.40s a tile on the optiplex iGPU, 476s for 26MP.
-      balanced -- FFDNet. 0.30s a tile, 41.6s for 26MP, and measured 43.25 dB
+      balanced -- FFDNet. 0.19s a tile on the iGPU, 26.6s for 26MP, and 43.25 dB
                   from SCUNet's output on the calibration frame.
       fast     -- the guided chroma filter. No network, ~0.1s, and it leaves
                   the luma grain rather than removing it.
