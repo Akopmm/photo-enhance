@@ -137,16 +137,17 @@
 
     <label for="denoise_method">Denoise engine</label>
     <select id="denoise_method" name="denoise_method">
-      <option value="quality">Quality &mdash; neural denoiser</option>
-      <option value="fast">Fast &mdash; guided chroma filter</option>
+      <option value="quality">Quality &mdash; SCUNet, the reference</option>
+      <option value="balanced">Balanced &mdash; FFDNet, ~11&times; faster, near-identical</option>
+      <option value="fast">Fast &mdash; guided chroma filter, no network</option>
     </select>
     <div class="hint">
-      Denoising is almost all of a render: on a 3200&nbsp;px frame the neural denoiser
-      takes ~16&nbsp;s against ~0.1&nbsp;s for the chroma filter, and at full resolution
-      it is minutes. They are not the same picture, though &mdash; the fast filter clears
-      the colour blotching and leaves the fine grain, which is the part the eye tends to
-      notice. Quality is the default; switch to Fast when you want the export now and can
-      live with grain.
+      Denoising is almost all of a render. On a 26&nbsp;megapixel frame:
+      <b>Quality</b> ~476&nbsp;s, <b>Balanced</b> ~42&nbsp;s, <b>Fast</b> ~3&nbsp;s.
+      Balanced is a smaller network that sees every pixel, and measured close enough to
+      Quality that the crops look equivalent &mdash; it is the one to reach for.
+      Fast uses no network at all: it clears colour blotching and leaves the fine grain,
+      which is a different picture rather than a cheaper route to the same one.
     </div>
 
     <div class="check"><input type="checkbox" id="subject_masking" name="subject_masking" />

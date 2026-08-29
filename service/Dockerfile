@@ -71,6 +71,19 @@ h=hashlib.sha256(open(dst,'rb').read()).hexdigest(); \
 print('scunet sha256', h, os.path.getsize(dst)//1024, 'KB'); \
 sys.exit(0 if h.startswith('fa78899ba2caec9d') else 1)"
 
+# FFDNet: 0.85M parameters against SCUNet's 17.9M, and it works on a 2x2
+# pixel-shuffled sub-image, so a 26MP frame costs 41.6s rather than 476s on
+# this hardware. 3.4MB, so the same fetch-and-verify as above but cheap.
+RUN python -c "\
+import hashlib, os, sys, urllib.request; \
+url='https://github.com/cszn/KAIR/releases/download/v1.0/ffdnet_color.pth'; \
+dst='/app/service/weights/ffdnet_color.pth'; \
+os.makedirs(os.path.dirname(dst), exist_ok=True); \
+urllib.request.urlretrieve(url, dst); \
+h=hashlib.sha256(open(dst,'rb').read()).hexdigest(); \
+print('ffdnet sha256', h, os.path.getsize(dst)//1024, 'KB'); \
+sys.exit(0 if h.startswith('286f04f7e3a20254') else 1)"
+
 
 # --- Intel iGPU compute runtime (optional acceleration for the denoiser) ---
 #

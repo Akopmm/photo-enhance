@@ -13,6 +13,8 @@ experiments/
 # SCUNet denoise weights (72MB) are fetched at image build time by the
 # Dockerfile and checksum-verified there; they are not committed.
 service/weights/scunet_color_real_psnr.pth
+# FFDNet colour weights (3.4MB), fetched the same way.
+service/weights/ffdnet_color.pth
 
 # OpenVINO IRs, built inside the image (BiRefNet ~89MB, SCUNet ~35MB) and
 # also produced locally by anyone who runs the conversion by hand. Build

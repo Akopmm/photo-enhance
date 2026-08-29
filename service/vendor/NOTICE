@@ -2,3 +2,12 @@ network_scunet.py is vendored from https://github.com/cszn/SCUNet
 Licensed under the Apache License, Version 2.0.
 Weights (scunet_color_real_psnr.pth) are the authors' released real-noise
 model, fetched at image build time; see service/Dockerfile.
+
+network_ffdnet.py and basicblock.py are vendored from
+https://github.com/cszn/KAIR
+Licensed under the MIT License.
+Weights (ffdnet_color.pth) are the authors' released colour model from the
+KAIR v1.0 release, fetched at image build time; see service/Dockerfile.
+
+  Zhang, Zuo & Zhang, "FFDNet: Toward a Fast and Flexible Solution for
+  CNN-based Image Denoising", IEEE Transactions on Image Processing, 2018.

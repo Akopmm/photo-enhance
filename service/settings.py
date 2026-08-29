@@ -47,13 +47,19 @@ DEFAULTS = {
     "denoise_mode": "auto",
     "denoise_threshold": 3.0,
     "denoise_amount": 0.9,
-    # quality | fast.
+    # quality | balanced | fast. Denoising is 99.7% of a full render, so this
+    # is the setting that decides how long one takes. Measured on a 26MP frame,
+    # optiplex:
     #
-    # "quality" runs SCUNet, which is 99.7% of a full-resolution render.
-    # "fast" runs a guided chroma filter instead: measured at 0.09s against
-    # 16s on a 3200px frame, it removes the colour blotching and leaves the
-    # luma grain. That is a different picture, not a cheaper route to the same
-    # one -- see research/denoise-speed/FINDINGS.md.
+    #   quality  SCUNet 17.9M    476s   the reference
+    #   balanced FFDNet 0.85M     42s   43.25 dB from SCUNet, and the crops
+    #                                   agree it looks equivalent
+    #   fast     guided filter     3s   colour noise gone, luma grain kept --
+    #                                   a different picture, not a cheaper
+    #                                   route to the same one
+    #
+    # See research/denoise-speed/FINDINGS.md, including what that measurement
+    # does not establish.
     "denoise_method": "quality",
     # auto | cpu | gpu.
     #
