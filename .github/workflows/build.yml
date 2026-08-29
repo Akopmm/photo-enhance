@@ -83,6 +83,7 @@ jobs:
           python tests/guided_chroma_test.py
           python tests/ffdnet_test.py
           python tests/sigma_test.py
+          python tests/render_cache_test.py
 
       # research/ imports from service/, so renaming anything it calls breaks
       # it silently. Importing costs a second and catches that; running them

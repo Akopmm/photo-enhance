@@ -842,8 +842,17 @@ async def render_full_style(import_id: str, style_key: str, crop_key: str | None
         cache_key = f"{cache_key}__s{round(strength * 100):03d}"
     _dn_meta = (storage.get_import(import_id) or {}).get("denoise") or {}
     _dn_amt = _dn_meta.get("amount", 0.9) if denoise_amount is None else denoise_amount
-    if _dn_meta.get("available") and _dn_amt:
-        cache_key = f"{cache_key}__d{round(float(_dn_amt) * 100):03d}"
+    # Not gated on `available`: an explicit request denoises regardless, so
+    # the amount has to be in the key regardless too, or 0% and 100% collide
+    # on one entry and the second download returns the first one's file.
+    #
+    # The ENGINE is in the key as well. Without it, switching denoise_method
+    # and downloading again returns the render made by the previous engine --
+    # so any attempt to compare them silently compares one against itself.
+    if float(_dn_amt) > 0:
+        import denoise as _dn
+        cache_key = (f"{cache_key}__d{round(float(_dn_amt) * 100):03d}"
+                     f"_{_dn._configured_method()[:1]}")
     if _size["edge"]:
         cache_key = f"{cache_key}__{size}"
     if storage.full_render_exists(import_id, cache_key):
