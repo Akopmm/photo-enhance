@@ -178,19 +178,37 @@ def estimate_sigma(arr: np.ndarray) -> float:
 
     Deliberately measured on flat regions only: a global standard deviation
     would mostly report how much detail the photo has, not how noisy it is.
+
+    Measured per channel and reported as the worst of the three, NOT on a
+    greyscale version of the frame. Sensor noise is largely independent
+    between channels, so averaging them cancels roughly sqrt(3) of it, and
+    what it cancels most is chroma noise -- which is the kind a warm indoor
+    shot has, and the kind people actually complain about.
+
+    That cost a real photo: a frame measuring 3.37 on red and 2.87 on blue
+    reported 1.91 as a greyscale, fell under the 3.0 threshold, and was
+    exported having never been denoised at all.
     """
-    g = (np.clip(arr, 0, 1).mean(axis=2) * 255).astype(np.float32)
+    a = np.clip(arr, 0, 1)
+    if a.ndim == 2:
+        a = a[..., None]
     bs = 32
-    h, w = g.shape
+    h, w = a.shape[:2]
     if h < bs * 2 or w < bs * 2:
         return 0.0
-    blocks = (g[:h // bs * bs, :w // bs * bs]
-              .reshape(h // bs, bs, w // bs, bs).swapaxes(1, 2).reshape(-1, bs * bs))
-    var = blocks.var(axis=1)
-    flat = blocks[var <= np.percentile(var, 15)]
-    if not len(flat):
-        return 0.0
-    return float(np.median(np.abs(flat - flat.mean(axis=1, keepdims=True))) * 1.4826)
+
+    worst = 0.0
+    for c in range(a.shape[2]):
+        g = (a[..., c] * 255).astype(np.float32)
+        blocks = (g[:h // bs * bs, :w // bs * bs]
+                  .reshape(h // bs, bs, w // bs, bs).swapaxes(1, 2).reshape(-1, bs * bs))
+        var = blocks.var(axis=1)
+        flat = blocks[var <= np.percentile(var, 15)]
+        if not len(flat):
+            continue
+        sigma = float(np.median(np.abs(flat - flat.mean(axis=1, keepdims=True))) * 1.4826)
+        worst = max(worst, sigma)
+    return worst
 
 
 @torch.no_grad()
@@ -228,14 +246,17 @@ def _blend_window(n: int, lead: int, trail: int) -> np.ndarray:
 
 
 
-# FFDNet takes the noise level as an input, and the estimator here reports the
+# FFDNet takes the noise level as an input, and the estimator reports the
 # standard deviation of the flattest blocks. Those are not the same number: a
-# real sensor's noise is signal-dependent and not the white Gaussian FFDNet
-# was trained on, so feeding the raw estimate leaves the result visibly
-# under-denoised. Twice the estimate matched SCUNet closely on the frame this
-# was calibrated against -- ONE frame, which is the weakest part of this and
-# is written down as such in research/denoise-speed/FINDINGS.md.
-FFDNET_SIGMA_SCALE = 2.0
+# real sensor's noise is signal-dependent, not the white Gaussian FFDNet was
+# trained on, so the raw estimate leaves the result under-denoised.
+#
+# Was 2.0 against the old greyscale estimator. That estimator under-reported
+# by about 1.7x by averaging the channels together, so the equivalent factor
+# on the per-channel one is ~1.2. Two very different photos agree: 1.13 on a
+# warm indoor frame, 1.24 on a dim one. That is a better footing than the
+# single frame the 2.0 came from, though still only two.
+FFDNET_SIGMA_SCALE = 1.2
 
 # Below this the model is being asked to remove almost nothing, and the
 # estimator is noisier than the noise at that point.
