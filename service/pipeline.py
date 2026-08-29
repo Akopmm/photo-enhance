@@ -347,8 +347,16 @@ def _default_denoise_amount(sigma: float) -> float:
     download. The slider still goes to 100% if you want it; it just is not
     the default for a photo that does not need it.
     """
-    lo = float(settings.get("denoise_threshold") or 3.0) + 2.0
-    hi = lo + 3.0
+    # Anchored at the threshold itself, not two above it. The +2 was tuned
+    # against an estimator that under-reported by about 1.7x by averaging the
+    # colour channels together; now that it reports honestly, starting two
+    # above the threshold leaves a band of genuinely noisy photos defaulting
+    # to no denoising at all -- which is what happened to a frame measuring
+    # 4.17 and looking it.
+    #
+    # So: nothing at the threshold, full strength four above it.
+    lo = float(settings.get("denoise_threshold") or 3.0)
+    hi = lo + 4.0
     top = float(settings.get("denoise_amount") or 0.9)
     if sigma <= lo:
         return 0.0

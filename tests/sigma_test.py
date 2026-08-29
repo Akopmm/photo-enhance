@@ -96,6 +96,30 @@ def test_small_frames_do_not_crash():
         assert v >= 0.0 and np.isfinite(v), f"{h}x{w} -> {v}"
 
 
+def test_the_default_amount_ramps_from_the_threshold():
+    """A photo that passes the gate must not default to doing nothing.
+
+    The ramp used to start two above the threshold, which was tuned against
+    an estimator that under-reported by ~1.7x. Once that was fixed, photos
+    between the threshold and threshold+2 were marked "denoise available" and
+    then defaulted to 0% -- available and inert, which is the worst of both.
+    """
+    import os
+    import tempfile
+    os.environ.setdefault("RENDER_STORAGE_DIR", tempfile.mkdtemp())
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "service"))
+    import pipeline
+
+    threshold = 3.0
+    assert pipeline._default_denoise_amount(threshold - 1) == 0.0, "below the gate should be 0"
+    assert pipeline._default_denoise_amount(threshold) == 0.0, "at the gate should be 0"
+    just_over = pipeline._default_denoise_amount(threshold + 0.4)
+    assert just_over > 0.0, "a photo that passes the gate defaulted to no denoising"
+    # and it must still ramp, not jump straight to full strength
+    assert just_over < 0.3, f"too eager just over the gate: {just_over}"
+    assert pipeline._default_denoise_amount(threshold + 4) >= 0.85, "never reaches full strength"
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
