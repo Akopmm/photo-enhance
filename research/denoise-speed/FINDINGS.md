@@ -126,6 +126,56 @@ That leaves three real levers, and only one of them is unexplored:
    that does downsample) are non-blind, taking a noise level the service
    already estimates. This is the remaining avenue.
 
+## The lever that worked: a cheaper network
+
+Resolution reduction is dead, so the remaining option was a network costing
+less per pixel while still seeing every pixel. Two candidates, both non-blind
+-- they take a noise level, which this service already estimates.
+
+Measured at the Medium working size (3200px), sigma estimated at 4.6:
+
+| variant | time | speedup | vs SCUNet | strength |
+|---|---|---|---|---|
+| SCUNet 17.9M (ships today) | 16.03 s | 1x | — | 29.52 dB |
+| FFDNet 0.85M, sigma 4.6 | 0.50 s | 32x | 32.44 dB | 35.84 dB |
+| **FFDNet 0.85M, sigma 9.1** | **0.50 s** | **32x** | **43.25 dB** | **30.14 dB** |
+| DRUNet 32.6M, sigma 4.6 | 4.99 s | 3.2x | 31.82 dB | 39.48 dB |
+| DRUNet 32.6M, sigma 9.1 | 4.96 s | 3.2x | 38.96 dB | 31.19 dB |
+
+FFDNet at twice the estimated sigma is 43.25 dB from SCUNet -- far closer than
+anything else tried, the cheap filter included at 35.08 dB -- and denoises to
+almost the same strength. **The crops agree**, which is the first time in this
+investigation that the numbers and the pictures pointed the same way: smooth
+like SCUNet, highlight detail intact, where every earlier candidate stayed
+visibly grainy.
+
+It works for the reason the others failed. FFDNet operates on a 2x2
+pixel-shuffled sub-image: a quarter of the spatial positions, but every
+original pixel still reaches the network. The grain is never discarded, so
+there is something left to remove.
+
+At full resolution on optiplex, 26MP:
+
+| | per tile | 26MP total | peak RSS |
+|---|---|---|---|
+| SCUNet | 3.40 s | **476 s** | ~2.8 GB compiled |
+| FFDNet | 0.30 s | **41.6 s** | 0.59 GB |
+
+Whole-frame in one pass works on Apple silicon (1.89 s, 1.1 GB) but was
+OOM-killed twice on optiplex, which has ~7 GB free. It needs the same tiling
+SCUNet uses; at 0.30 s a tile that costs nothing.
+
+Three things this measurement does NOT establish:
+
+- **The sigma multiplier is hand-picked.** 2x the estimator worked on one
+  photo; at 1x the result is visibly under-denoised. It needs calibrating over
+  a set, not a sample.
+- **The checkpoint is AWGN-trained**, where the SCUNet in service is
+  `color_real`. It held up on real sensor noise here. One frame is not a
+  distribution.
+- Nothing was compared at `size=original`, only at the Medium working size and
+  by tile cost.
+
 ## Conclusion
 
 - No cheap substitute for SCUNet was found. Guided chroma is a real option for
@@ -137,6 +187,16 @@ That leaves three real levers, and only one of them is unexplored:
   resolution and cheap denoising are the same trade-off in different words.
 
 ## Method notes
+
+`nets.py` needs the KAIR definitions and weights, neither committed:
+
+    pip download / curl the two networks and weights into a directory, then
+    WEIGHTS=/that/dir PYTHONPATH=/that/dir PHOTO=/path/shot.cr3 \
+      ./service/.venv/bin/python research/denoise-speed/nets.py
+
+  * network_ffdnet.py, network_unet.py, basicblock.py from cszn/KAIR (MIT)
+  * ffdnet_color.pth, drunet_color.pth from its v1.0 release
+
 
 - Reference cached to `ref.npy`; delete to rebuild.
 - Crop patches are chosen by high-frequency energy in flat regions, with blown
