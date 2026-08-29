@@ -96,6 +96,51 @@ def test_small_frames_do_not_crash():
         assert v >= 0.0 and np.isfinite(v), f"{h}x{w} -> {v}"
 
 
+def test_the_shadow_level_finds_noise_the_global_figure_misses():
+    """A dark frame whose shadows are noisy and whose highlights are clean.
+
+    This is the shape that broke a fixed multiplier: the global estimate is
+    taken from the flattest blocks, which in such a frame are the calm bright
+    areas, so it reports a level far below what the shadows carry. Two photos
+    measured 8.6 and 10.2 globally and needed opposite treatment because one
+    carried 24.4 in its shadows and the other 10.2.
+    """
+    rng = np.random.default_rng(7)
+    h, w = 512, 512
+    img = np.zeros((h, w, 3), np.float32)
+    img[:, :w // 2] = 0.25          # shadow half
+    img[:, w // 2:] = 0.75          # bright half
+    # noise only in the shadows, which is how a sensor behaves
+    img[:, :w // 2] += rng.normal(0, 8.0 / 255, (h, w // 2, 3)).astype(np.float32)
+    img = np.clip(img, 0, 1)
+
+    glob = dn.estimate_sigma(img)
+    shad = dn.shadow_sigma(img)
+    assert shad > glob * 1.5, (
+        f"the shadow level did not find it: global {glob:.2f}, shadow {shad:.2f}")
+    assert shad > 5.0, f"shadow noise of 8 reported as {shad:.2f}"
+
+
+def test_the_shadow_level_never_undercuts_the_global_one():
+    # A frame with no shadows at all must not be denoised more weakly than
+    # before just because the band is empty.
+    rng = np.random.default_rng(8)
+    bright = np.clip(np.full((512, 512, 3), 0.8, np.float32)
+                     + rng.normal(0, 6.0 / 255, (512, 512, 3)).astype(np.float32), 0, 1)
+    assert dn.shadow_sigma(bright) >= dn.estimate_sigma(bright) - 1e-6
+
+
+def test_the_shadow_level_matches_the_global_one_on_even_noise():
+    # Noise spread evenly across brightness: the two should broadly agree, or
+    # the shadow rule would be quietly over-denoising ordinary photos.
+    rng = np.random.default_rng(9)
+    ramp = np.repeat(np.linspace(0.05, 0.95, 512, dtype=np.float32)[None, :, None], 512, 0)
+    img = np.clip(np.repeat(ramp, 3, axis=2)
+                  + rng.normal(0, 5.0 / 255, (512, 512, 3)).astype(np.float32), 0, 1)
+    glob, shad = dn.estimate_sigma(img), dn.shadow_sigma(img)
+    assert shad < glob * 1.6, f"over-reads even noise: global {glob:.2f}, shadow {shad:.2f}"
+
+
 def test_the_default_amount_ramps_from_the_threshold():
     """A photo that passes the gate must not default to doing nothing.
 

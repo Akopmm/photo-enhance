@@ -186,6 +186,37 @@ Three things this measurement does NOT establish:
 - `size=original` remains expensive (~9 min for 26 MP) and is inherent: full
   resolution and cheap denoising are the same trade-off in different words.
 
+## What actually made the cheap network match the expensive one
+
+Measured through `validate.py`, on the download, on three photos, on noise AND
+detail. Times are a 3200px render on the optiplex CPU.
+
+| photo | quality (SCUNet) | balanced, global level | balanced, shadow level |
+|---|---|---|---|
+| dark indoor | 207s  2.72 / 1.53 | 14.2s  11.33 / 12.35 | **14.2s  2.40 / 1.50** |
+| daylight | 201s  1.76 / 11.13 | 14.3s  1.85 / 9.98 | **15.0s  2.07 / 11.27** |
+| outdoor | 210s  7.93 / 7.90 | 14.5s  8.11 / 7.76 | **14.8s  8.02 / 7.45** |
+
+*(noise in the shadow band / detail; lower noise and higher detail are better)*
+
+FFDNet is non-blind, so everything depends on the level it is told, and a
+multiple of the global estimate cannot be that level. Two of these photos
+measured 8.6 and 10.2 globally and needed opposite treatment: one carried 24.4
+in its shadows, the other 10.2. A multiplier tuned on the first destroys the
+second (detail 11.13 -> 6.51) and one tuned on the second leaves the first
+untouched (shadows 11.33 against SCUNet's 2.72).
+
+The global figure is a floor taken from the flattest blocks, and in a dark
+frame those are the calm bright areas. So the level now comes from the shadow
+band itself -- where sensor noise is worst, because it is signal-dependent and
+the read floor dominates where there is least signal, and where the eye finds
+it. Never below the global figure, so a frame with no shadows is no worse off.
+
+That single change makes a 0.85M-parameter network match a 17.9M one on both
+axes at **14x the speed**. It is the same reason the whole "denoise smaller"
+family failed: what matters is not how much work the network does but whether
+it is looking at the thing that needs fixing.
+
 ## Every wrong answer here failed the same way
 
 Four findings in this investigation were reported confidently and were wrong.
