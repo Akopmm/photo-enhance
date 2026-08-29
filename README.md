@@ -106,20 +106,51 @@ foreground. Costs 60M params against 3.8M, once per import.
 
 ### Denoise
 
-[SCUNet](https://github.com/cszn/SCUNet), the authors' **real-noise** model rather than a
-synthetic-Gaussian one — which is why it holds up on an actual high-ISO CR3. Measured on one: sigma
-4.0 → 0.8 across the frame and 8.1 → 0.3 at 1:1, with eyelashes and catchlights intact.
+Denoising is **99.7% of a full-resolution render** — 897 s of a 900 s job on the deploy box — because
+the reference model has no internal downsampling, so its cost scales with pixel count. Everything else
+in the pipeline together is under three seconds. So there are three engines, chosen by
+`denoise_method`:
 
-`denoise_mode: auto` (default) measures the corrected baseline and only denoises above sigma 3, so
-clean frames are neither softened nor charged for it. This is the most expensive model in the service
-— unlike the others it has no internal downsampling — and a noisy import costs ~87 s on the deploy box
-against ~15 s for a clean one.
+| | model | download\* | vs the reference |
+|---|---|---|---|
+| `quality` | [SCUNet](https://github.com/cszn/SCUNet) 17.9 M | ~200 s | the reference |
+| `balanced` *(recommended)* | [FFDNet](https://github.com/cszn/KAIR) 0.85 M | ~14 s | matches on noise **and** detail |
+| `fast` | guided chroma filter, no network | ~4 s | colour noise gone, grain kept |
+
+\* a 26 MP photo exported at **Medium**, on a 6-core i5-10500T. `Original` is
+roughly four times each figure, since the resize happens before the denoise.
+
+`quality` is SCUNet's **real-noise** model rather than a synthetic-Gaussian one, which is why it holds
+up on an actual high-ISO CR3.
+
+`balanced` is 14× faster for output the measurements cannot separate from it — 2.36 against 2.72 on
+shadow noise, 1.49 against 1.53 on retained detail. It works because FFDNet runs on a 2×2
+pixel-shuffled sub-image: a quarter of the spatial positions, while every original pixel still reaches
+the network, so the grain it exists to remove is never discarded first. It is non-blind, and the level
+it is told comes from the **shadow band** — sensor noise is signal-dependent, so it is worst where
+there is least signal, and a global figure measured on the flattest blocks reports the calm bright
+areas instead.
+
+`fast` uses no network at all. It is a different picture rather than a cheaper route to the same one:
+the colour blotching goes and the fine grain stays.
+
+**How this is measured.** Noise per brightness band and detail alongside it, on the JPEG the download
+button produces — not on any intermediate. Both matter: noise and detail are the same
+high-frequency energy, so "less noise" is "less detail" until they are looked at separately.
+`research/denoise-speed/` holds the harness and the findings, including four confident conclusions
+that turned out to be measurements of the wrong thing.
+
+`denoise_mode: auto` (default) only denoises above sigma 3, so clean frames are neither softened nor
+charged for it. The noise estimate is taken **per channel** and at native resolution: averaging the
+channels cancels roughly √3 of the noise — most of it chroma, which is what a warm indoor frame has —
+and a downscaled preview has had its noise averaged away, so both under-report.
 
 **The amount is a live slider** because both baselines are stored, untouched and fully denoised: any
 amount is a blend between them, so it responds in ~46 ms with no model run. Full-resolution renders
 tile the model with feathered overlap (measured 0.14/255 mean difference from a single pass) and blend
 to the same amount — a denoised preview with a noisy download would be the same divergence bug the
-masking rework removed.
+masking rework removed. The stored "is it noisy" verdict chooses the default amount and nothing more;
+an explicit request is honoured whatever it says.
 
 Recipes: **Selective Colour** (subject in colour, background mono), **Subject Pop**, **Sky Drama**, **Depth Pop**, **Aerial Depth**, **Foliage**. Only the ones the photo can actually support are offered — Aerial Depth needs outdoor content, Foliage needs greenery, and the depth looks need the scene to span a depth range at all.
 
@@ -209,7 +240,7 @@ Each user holds **their own** Immich URL and API key, so imports read from their
 | Subject / sky / foliage / depth region grading | — | ✓ |
 | Crop suggestions | — | ✓ |
 | Denoise (when the photo needs it) | — | ✓ |
-| Import time, 26 MP CR3 (6-core i5-10500T) | ~5 s | ~15 s clean, ~87 s if denoised |
+| Import time, 26 MP CR3 (6-core i5-10500T) | ~5 s | ~10 s, denoised or not, on `balanced` |
 | Container peak while importing | ~1 GB | ~2.5 GB, ~4.5 GB if denoised |
 
 Switch in **Settings**. Defaults to `classic`.
@@ -224,11 +255,16 @@ measured, and what was concluded — wrong turns included, since those are
 usually the part worth keeping.
 
 The first one, `research/denoise-speed`, asks whether renders can reach seconds
-with cheaper denoising. Short answer: no substitute for the denoiser was found,
-and the idea that looked like a 46× win turned out to be worth half a second
-once it was measured against the path renders actually take. Denoise is 99.7%
-of a full-resolution render, and the preset sizes already denoise at the
-delivered resolution, which is the most valuable thing they could do.
+with cheaper denoising. They can: a 0.85 M network matches the 17.9 M reference
+on noise *and* on detail at 14× the speed, once it is told the right noise
+level — which turned out to be the shadow band rather than any multiple of a
+global figure.
+
+Getting there took four confident conclusions that were wrong, each a correct
+measurement of the wrong thing, and the write-up keeps all of them. It also
+records the family of ideas that is dead rather than untuned: anything that
+shrinks the image before the network cannot remove grain, because grain lives
+in exactly the detail that shrinking discards.
 
 ## Running it
 
