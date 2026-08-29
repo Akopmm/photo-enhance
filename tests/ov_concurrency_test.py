@@ -70,6 +70,22 @@ def test_the_control_still_fails_the_old_way():
         f"expected 'Infer Request is busy' from the shared request, got: {errors}")
 
 
+def test_a_model_with_two_inputs_is_fed_both():
+    # FFDNet takes an image and a noise level. Feeding only the first would
+    # leave the second at whatever the request was last given -- which for a
+    # noise level means silently denoising by the wrong amount, with nothing
+    # in the output shape to show for it.
+    import openvino as ov
+    import openvino.opset13 as op
+    a = op.parameter([1, 3, 8, 8], np.float32, name="img")
+    b = op.parameter([1, 1, 1, 1], np.float32, name="level")
+    comp = ov.Core().compile_model(ov.Model([op.multiply(a, b)], [a, b], "two_in"), "CPU")
+    img = np.ones((1, 3, 8, 8), np.float32)
+    for level in (2.0, 5.0):
+        out = ov_infer.infer(comp, "two_in", {0: img, 1: np.full((1, 1, 1, 1), level, np.float32)})
+        assert np.allclose(out, level), f"level {level} did not reach the model: {out.mean()}"
+
+
 def test_results_survive_the_next_inference():
     # The request reuses its output buffer, so a result handed back without a
     # copy is quietly overwritten by the following tile.

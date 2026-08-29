@@ -31,13 +31,17 @@ def request(compiled, key: str):
     return req
 
 
-def infer(compiled, key: str, arr: np.ndarray, output=None) -> np.ndarray:
+def infer(compiled, key: str, arr, output=None) -> np.ndarray:
     """Run `arr` through `compiled` on this thread's own request.
+
+    `arr` is a single array, or a {input_index: array} mapping for a model
+    that takes more than one -- FFDNet wants the image and a noise level.
 
     The result is copied out. The request reuses its output buffer, so what it
     hands back stays valid only until this thread infers again -- and the
     callers here keep results around while they blend tiles.
     """
-    result = request(compiled, key).infer({0: arr})
+    feed = arr if isinstance(arr, dict) else {0: arr}
+    result = request(compiled, key).infer(feed)
     out = result[output] if output is not None else next(iter(result.values()))
     return np.array(out, copy=True)

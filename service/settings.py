@@ -52,7 +52,7 @@ DEFAULTS = {
     # optiplex:
     #
     #   quality  SCUNet 17.9M    476s   the reference
-    #   balanced FFDNet 0.85M     42s   43.25 dB from SCUNet, and the crops
+    #   balanced FFDNet 0.85M     27s   43.25 dB from SCUNet, and the crops
     #                                   agree it looks equivalent
     #   fast     guided filter     3s   colour noise gone, luma grain kept --
     #                                   a different picture, not a cheaper
