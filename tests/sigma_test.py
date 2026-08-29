@@ -116,8 +116,13 @@ def test_the_default_amount_ramps_from_the_threshold():
     just_over = pipeline._default_denoise_amount(threshold + 0.4)
     assert just_over > 0.0, "a photo that passes the gate defaulted to no denoising"
     # and it must still ramp, not jump straight to full strength
-    assert just_over < 0.3, f"too eager just over the gate: {just_over}"
-    assert pipeline._default_denoise_amount(threshold + 4) >= 0.85, "never reaches full strength"
+    assert just_over < 0.4, f"too eager just over the gate: {just_over}"
+    # A photo a clear step above the gate has to be actually cleaned, not
+    # nudged: at 26% a frame at sigma 3.2 only reached 2.54 from 3.21, which
+    # is what "denoised" looked like to the person who reported it.
+    clearly_noisy = pipeline._default_denoise_amount(threshold + 1.2)
+    assert clearly_noisy >= 0.6, f"a clearly noisy photo defaults to only {clearly_noisy:.0%}"
+    assert pipeline._default_denoise_amount(threshold + 1.5) >= 0.85, "never reaches full strength"
 
 
 if __name__ == "__main__":

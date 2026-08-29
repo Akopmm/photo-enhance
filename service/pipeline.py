@@ -347,16 +347,22 @@ def _default_denoise_amount(sigma: float) -> float:
     download. The slider still goes to 100% if you want it; it just is not
     the default for a photo that does not need it.
     """
-    # Anchored at the threshold itself, not two above it. The +2 was tuned
-    # against an estimator that under-reported by about 1.7x by averaging the
-    # colour channels together; now that it reports honestly, starting two
-    # above the threshold leaves a band of genuinely noisy photos defaulting
-    # to no denoising at all -- which is what happened to a frame measuring
-    # 4.17 and looking it.
+    # Nothing at the threshold, the configured maximum 1.5 above it.
     #
-    # So: nothing at the threshold, full strength four above it.
+    # This was a much shallower ramp, and both reasons for that are gone. It
+    # started two ABOVE the threshold, tuned against an estimator that
+    # under-reported by ~1.7x -- so photos that clearly needed denoising were
+    # admitted and then defaulted to zero. And it climbed slowly because 90%
+    # on SCUNet meant ~126 tiles and about seven minutes, which is a real
+    # reason to be shy. The balanced engine does the same frame in well under
+    # a minute, so timidity now costs quality and saves almost nothing.
+    #
+    # Measured on a frame at sigma 3.2 whose owner called it noisy: 26% left
+    # it at 2.54, barely changed. 70% reaches 1.55, full strength 1.21, and
+    # SCUNet itself lands at 0.99. A default that admits a photo should
+    # actually clean it.
     lo = float(settings.get("denoise_threshold") or 3.0)
-    hi = lo + 4.0
+    hi = lo + 1.5
     top = float(settings.get("denoise_amount") or 0.9)
     if sigma <= lo:
         return 0.0
