@@ -70,9 +70,15 @@ def _with_fake_gpu():
         def get_property(self, *a):
             return "fake iGPU"
 
-    saved = (ov.Core, ov.convert_model)
+    # _model() is stubbed too: it loads SCUNet's weights, which are fetched in
+    # the Docker build and are not on a CI runner. Without this the conversion
+    # throws, the except swallows it, and the test reads "the guard blocked
+    # the build" when the guard never ran -- which is exactly how this test
+    # passed here and failed in CI.
+    saved = (ov.Core, ov.convert_model, denoise._model)
     ov.Core = FakeCore
     ov.convert_model = lambda model, example_input=None: "converted"
+    denoise._model = lambda: _Identity()
     return ov, saved
 
 
@@ -91,7 +97,7 @@ def test_the_scunet_gpu_build_refuses_without_headroom():
             "converted SCUNet with 4GB free; that is the OOM that killed the service")
     finally:
         denoise._free_gb = free
-        ov.Core, ov.convert_model = saved
+        ov.Core, ov.convert_model, denoise._model = saved
         denoise._cache.pop("ov", None)
 
 
@@ -106,7 +112,7 @@ def test_plenty_of_memory_does_not_block_the_gpu_build():
             "the guard blocked a build on a machine with 64GB free")
     finally:
         denoise._free_gb = free
-        ov.Core, ov.convert_model = saved
+        ov.Core, ov.convert_model, denoise._model = saved
         denoise._cache.pop("ov", None)
 
 
